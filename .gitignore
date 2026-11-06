@@ -1,0 +1,7 @@
+CraneGH/bin/
+CraneGH/obj/
+__MACOSX/
+*.old
+*.zip
+papers/
+code_reference/

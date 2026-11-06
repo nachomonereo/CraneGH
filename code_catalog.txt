@@ -1,0 +1,90 @@
+=== GITHUB / GIT REPOS ===
+https://github.com/CMU-Graphics/Scotty3D	Code	https://www.cs.cmu.edu/~kmcrane/index.html
+https://github.com/GeometryCollective/fieldgen	fieldgen	https://www.cs.cmu.edu/~kmcrane/Projects/GloballyOptimalDirectionFields/
+https://github.com/GeometryCollective/wost-simple	C++ tutorial	https://www.cs.cmu.edu/~kmcrane/Projects/WalkOnStars/index.html
+https://github.com/MarkGillespie/CEPS	CEPS	https://www.cs.cmu.edu/~kmcrane/Projects/CEPS/index.html
+https://github.com/avaxman/Directional	Directional	https://www.cs.cmu.edu/~kmcrane/Projects/GloballyOptimalDirectionFields/
+https://github.com/cmu-geometry/ddg-exercises-js	JS]	https://www.cs.cmu.edu/~kmcrane/index.html
+https://github.com/dgpdec	C++	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://github.com/dgpdec/course	C++	https://www.cs.cmu.edu/~kmcrane/Projects/DGPDEC/index.html
+https://github.com/geometrycollective/ddg-exercises	[C++	https://www.cs.cmu.edu/~kmcrane/index.html
+https://github.com/icethrush/repulsive-curves	repulsive-curves	https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/index.html
+https://github.com/icethrush/repulsive-curves/blob/master/scenes/FORMATS.md	here	https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/index.html
+https://github.com/icethrush/repulsive-surfaces	repulsive-surfaces	https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveSurfaces/index.html
+https://github.com/ipc-sim/IDP	reference IDP code	https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveShells/index.html
+https://github.com/jiriminarcik	Minarčík	https://www.cs.cmu.edu/~kmcrane/index.html
+https://github.com/keenancrane/Scotty3Dataset	GitHub	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://github.com/keenancrane/plain-knit-yarn		https://www.cs.cmu.edu/~kmcrane/index.html
+https://github.com/nmwsharp/navigating-intrinsic-triangulations-demo	navigating-intrinsic-triangulations-demo	https://www.cs.cmu.edu/~kmcrane/Projects/NavigatingIntrinsicTriangulations/index.html
+https://github.com/nmwsharp/nonmanifold-laplacian	nonmanifold-laplacian	https://www.cs.cmu.edu/~kmcrane/Projects/NonmanifoldLaplace/index.html
+https://github.com/nmwsharp/polyscope	Polyscope	https://www.cs.cmu.edu/~kmcrane/Projects/VectorHeatMethod/index.html
+https://github.com/nmwsharp/potpourri3d	Python bindings	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://github.com/nmwsharp/variational-surface-cutting	variational-surface-cutting	https://www.cs.cmu.edu/~kmcrane/Projects/VariationalCuts/
+https://github.com/nmwsharp/vector-heat-demo	vector-heat-demo	https://www.cs.cmu.edu/~kmcrane/Projects/VectorHeatMethod/index.html
+https://github.com/nyiotis/SpinXFormGPU	CUDA	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://github.com/odedstein/DevelopabilityOfTriangleMeshes		https://www.cs.cmu.edu/~kmcrane/Projects/DiscreteDevelopable/
+https://github.com/penrose/penrose/tree/main/packages/examples/src/dinoshade	Penrose dinoshade example	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+
+=== CODE ARCHIVES (ZIP/TGZ) ===
+http://www.tcl3d.org/download/DemoOfTheMonth/10-01-QJuliaGPU.zip	port to Tcl	https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_linux_src.tar.gz	Linux	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_mac_intel.zip	Mac (Intel)	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_mac_ppc.zip	Mac (PowerPC)	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_mac_src.zip	Mac	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_windows.zip	Windows	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/tashokugo_windows_src.zip	Windows	https://www.cs.cmu.edu/~kmcrane/Projects/3DTashokuGo/
+https://www.cs.cmu.edu/~kmcrane/Projects/ConformalWillmoreFlow/data.zip		https://www.cs.cmu.edu/~kmcrane/Projects/ConformalWillmoreFlow/
+https://www.cs.cmu.edu/~kmcrane/Projects/EnergyPreservingFluid/data.zip		https://www.cs.cmu.edu/~kmcrane/Projects/EnergyPreservingFluid/
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/HeatMethodLinux.zip	[Linux]	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/HeatMethodMac.zip	[Mac]	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/HeatMethodSource.zip	Unity	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/HeatMethodWindows.zip	[Windows]	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/code.zip	ANSI C	https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/KleinBox.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/Nefertiti.obj.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/blub.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/bob.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/city.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/constant-width.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/crumpleddevelopable.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/csaszar.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/desertrose.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/dinoshade.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/inigo.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/ogre.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/oloid.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/pig.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/pittsburghbridge.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/sdcc.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/snakeboard.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/spot.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/tilings.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/yeahright.zip	Download	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/OptimalCones/optimal-cones-data.zip	optimal-cones-data.zip	https://www.cs.cmu.edu/~kmcrane/Projects/OptimalCones/
+https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/QJuliaGPU.zip	Windows	https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/
+https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/QJuliaGPUSource.zip	C++	https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/
+https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/QJuliaGPUps2.zip	Windows/PixelShader 2.0	https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/
+https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/QJuliaGPUps2Source.zip	C++/PixelShader 2.0	https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/FreedmanHeWang.zip		https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/KnotDatasets.zip	knot dataset	https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/data.zip		https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_commandline.zip	C++/Simple	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_fast.zip	C++/Fast	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_mac.zip	MacOS X	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_mac_lion.zip	MacOS X (Lion)	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_opengl.zip	C++/OpenGL	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/spinxform_windows.zip	Windows	https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/
+https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/StripePatterns.zip	StripePatterns	https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/code.zip	stripes	https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/SubgridMarching/SubgridMarchingTetrahedron-C.zip	C	https://www.cs.cmu.edu/~kmcrane/Projects/SubgridMarching/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/SymmetricMovingFrames/data.zip		https://www.cs.cmu.edu/~kmcrane/Projects/SymmetricMovingFrames/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/TrivialConnectionsMATLAB.zip	MATLAB	https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/TrivialConnectionsSource.zip	C++	https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/code.zip	Comb	https://www.cs.cmu.edu/~kmcrane/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/data.zip		https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/executable.zip	Comb	https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/
+
+=== DIRECT SOURCE FILES ===
+http://sgifiles.irixnet.org/sgi/opengl/contrib/mjk/tips/dinoshade.c	dinoshade.c	https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/
+https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/WoSLaplace2D.cpp.html	WoSLaplace2D.cpp	https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/index.html
+https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/WoSPoisson2D.cpp.html	WoSPoisson2D.cpp	https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/index.html

@@ -1,0 +1,121 @@
+http://alecjacobson.com/weblog/media/notes-on-inflating-curves-2009-baran.pdf	inflating curves
+http://arxiv.org/pdf/1405.4734v1.pdf	PDF
+http://dl.alphaworks.ibm.com/technologies/cellsw/CBE_SDK_Guide_1.1.pdf	Cell Broadband Engine SDK
+http://graphics.cs.uiuc.edu/~jch/papers/rtqjs.pdf	"Ray Tracing Deterministic 3-D Fractals"
+http://home.eps.hw.ac.uk/~ab226/papers/pde4dist.pdf	On Variational and PDE-Based Distance Function Approximations
+http://www.ams.org/publications/journals/notices/201710/rnoti-p1153.pdf	Discrete Differential Geometry
+http://www.cs.cmu.edu/~kmcrane/Projects/BoundaryFirstFlattening/paper.pdf	conformal surface parameterization
+http://www.rohansawhney.io/WoStRobin.pdf	PDF
+http://www.ryanmwhite.com/thesis/dissertation.pdf	Modeling Cloth from Examples
+https://iheartla.github.io/iheartmesh/iheartmesh.pdf	PDF
+https://imaging.cs.cmu.edu/differential_walk_on_spheres/index_files/paper.pdf	PDF
+https://imaging.cs.cmu.edu/volumetric_walk_on_spheres/index_files/paper.pdf	PDF
+https://markjgillespie.com/Research/harnack-tracing/HarnackTracing.pdf	PDF
+https://markjgillespie.com/Research/int-tri-course/int_tri_course.pdf	PDF
+https://markjgillespie.com/Research/integer-coordinates/integer_coordinates.pdf	PDF
+https://minarcik.com/SurfaceUntangling.pdf	PDF
+https://nmwsharp.com/media/cea_derivations.pdf	Shape Derivatives for Variational Cutting
+https://nmwsharp.com/media/cea_tutorial.pdf	Céa’s Method for PDE-constrained shape optimization
+https://nmwsharp.com/media/papers/diffusion-net/DiffusionNet.pdf	PDF
+https://nzfeng.github.io/research/PointsAsTori/PointsAsTori.pdf	PDF
+https://nzfeng.github.io/research/SignedHeatMethod/SignedDistance.pdf	PDF
+https://page.math.tu-berlin.de/~bobenko/papers/2007_Bob_Spr.pdf	intrinsic Laplacian
+https://www.cs.cmu.edu/~kmcrane/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/AuxeticDesign/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/BoundaryFirstFlattening/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/BoundaryValueCaching/BoundaryValueCaching.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/CEPS/CEPS.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/CEPS/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/ClothCapture/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/ClothCapture/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/ConformalGeometryProcessing/thesis.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/ConformalWillmoreFlow/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/ConformalWillmoreFlow/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/DDG/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/DGPDEC/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/DataDrivenCloth/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/DeployableAuxetics/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/DiscreteConnections/thesis.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/DiscreteDevelopable/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/DiscreteDevelopable/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/EnergyPreservingFluid/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/EnergyPreservingFluid/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/ExcursionThroughDDG/Preface.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/ExtrinsicSpectrum/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/FlipOut/FlipOut.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/GPUFluid/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/GPUFluid/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/GeodesicSurvey/GeodesicSurvey.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/GloballyOptimalDirectionFields/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/GloballyOptimalDirectionFields/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/HeatMethodGraphs.pdf	use the heat method to solve the single- or multiple-source shortest path problem on general graphs
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/paperTOG.pdf	TOG Version
+https://www.cs.cmu.edu/~kmcrane/Projects/IntrinsicErrorMetric/IntrinsicErrorMetric.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/LieGroupIntegrators/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/LieGroupIntegrators/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/MinkowskiPenalties/MinkowskiPenalties.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/MobiusRegistration/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/KleinBoxPattern.pdf	printable pattern
+https://www.cs.cmu.edu/~kmcrane/Projects/ModelRepository/SpotSticker.pdf	printable sticker (PDF)
+https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/MonteCarloGeometryProcessing/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/MultiscaleGrid/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/NavigatingIntrinsicTriangulations/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/NavigatingIntrinsicTriangulations/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/NavigatingIntrinsicTriangulations/supplemental.pdf	Supplemental Material
+https://www.cs.cmu.edu/~kmcrane/Projects/NonmanifoldLaplace/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/NonmanifoldLaplace/NonmanifoldLaplace.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/OptimalCones/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/OptimalCones/YousufSolimanMSThesis.pdf	Conformal Cone Parameterization Through Optimal Control
+https://www.cs.cmu.edu/~kmcrane/Projects/OptimalCones/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/Other/ConformalGeometryOfSimplicialSurfaces.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/Penrose/Penrose_DSLDI.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/Penrose/Penrose_OBT.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/Penrose/Penrose_SIGGRAPH.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/PlutoTwoColorMap/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/QuaternionJulia/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RayTracingGeometryImages/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RectangularMultiChartGeometryImages/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RectangularMultiChartGeometryImages/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RectangularSurfaceParameterization/RectangularSurfaceParameterization.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/RepulsiveCurves.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveCurves/RepulsiveCurves_Supplemental.pdf	Supplemental Material
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveShells/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveShells/RepulsiveShells.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveSurfaces/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RepulsiveSurfaces/RepulsiveSurfaces.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RestingBodies/PuttingRigidBodiesToRest.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/RobustPlanarMaps/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/RobustPlanarMaps/RobustPlanarMaps.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/errata.pdf	Errata
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/report.pdf	Oberwolfach Report
+https://www.cs.cmu.edu/~kmcrane/Projects/SpinTransformations/supplemental.pdf	Performance information
+https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/StripePatterns/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/SubgridMarching/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/SubgridMarching/SubgridMarchingSupplement.pdf	Supplemental Material (PDF, 3.4MB)
+https://www.cs.cmu.edu/~kmcrane/Projects/SubgridMarching/SubgridMarchingTets.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/SymmetricMovingFrames/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/SymmetricMovingFrames/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/Telescopes/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/errata.pdf	Errata
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/simplyconnected.pdf	A Simplified Algorithm for Simply-Connected Surfaces
+https://www.cs.cmu.edu/~kmcrane/Projects/TrivialConnections/softconstraints.pdf	Adding Soft Constraints
+https://www.cs.cmu.edu/~kmcrane/Projects/VariableCoefficientWoS/VariableCoefficientWoS.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/VariationalCuts/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/VariationalCuts/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/VectorHeatMethod/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/VectorHeatMethod/paper.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/WalkOnStars/KeenanCraneCV.pdf	CV
+https://www.cs.cmu.edu/~kmcrane/Projects/WalkOnStars/WalkOnStars.pdf	PDF
+https://www.cs.cmu.edu/~kmcrane/Projects/WalkOnStars/WoSt-tutorial.pdf	Implementation Guide
+https://www.cs.cmu.edu/~kmcrane/Projects/WindingNumbersOnSurfaces/WindingNumbersOnSurfaces.pdf	PDF
