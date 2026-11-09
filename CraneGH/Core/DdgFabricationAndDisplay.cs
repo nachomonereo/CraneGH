@@ -2826,5 +2826,587 @@ namespace CraneGH.Core
 
             return outPlanes;
         }
+
+        // =========================================================================================
+        // 27. REPULSIVE SHELLS & 2D CONFIGURATION-SPACE (C-SPACE) GEODESIC ROBOT TOOLPATH
+        //     Inspired by "Repulsive Shells" (Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024)
+        //     & "Repulsive Curves" (Yu, Schumacher, Crane 2021).
+        //     - Mode 0: Fixed TCP along Printing/Milling Path + Spindle/Plane Collision & Singularity Avoidance
+        //     - Mode 1: Pick & Place 3D Obstacle-Avoiding Geodesic Trajectory from A to B
+        //     - Mode 2: 2D Spherical Orientation Map [Theta, Phi] for Spindle & Wrist Singularity Analysis
+        // =========================================================================================
+        public static Polyline ComputeRepulsiveShellsAndCSpaceRobotPath(
+            IList<Plane> inputFrames,
+            IList<Mesh> obstacleMeshes,
+            double spindleRadiusInput,
+            int mode,
+            out List<Plane> optimalRobotPlanes,
+            out Mesh cSpaceMapMesh,
+            out Polyline cSpaceGeodesicPath,
+            out Mesh spindleShellPreviewMesh,
+            out double[] clearanceMarginPerStep)
+        {
+            optimalRobotPlanes = new List<Plane>();
+            cSpaceMapMesh = new Mesh();
+            cSpaceGeodesicPath = new Polyline();
+            spindleShellPreviewMesh = new Mesh();
+            clearanceMarginPerStep = Array.Empty<double>();
+
+            if (inputFrames == null || inputFrames.Count == 0)
+                return new Polyline();
+
+            // 1. Resample or interpolate input frames into nSteps = 44 trajectory stations from A to B
+            int nSteps = 44;
+            int nAngles = 29; // V-resolution of the 2D Configuration-Space Map
+            var baseFrames = new Plane[nSteps];
+
+            if (inputFrames.Count == 1)
+            {
+                for (int i = 0; i < nSteps; i++) baseFrames[i] = inputFrames[0];
+            }
+            else
+            {
+                // Compute cumulative arc length
+                double[] cumLen = new double[inputFrames.Count];
+                for (int i = 1; i < inputFrames.Count; i++)
+                {
+                    double d = inputFrames[i].Origin.DistanceTo(inputFrames[i - 1].Origin);
+                    cumLen[i] = cumLen[i - 1] + Math.Max(1e-4, d);
+                }
+                double totalL = cumLen[inputFrames.Count - 1];
+
+                for (int s = 0; s < nSteps; s++)
+                {
+                    double targetS = (totalL * s) / (nSteps - 1.0);
+                    int idx = 0;
+                    while (idx < inputFrames.Count - 2 && cumLen[idx + 1] < targetS)
+                        idx++;
+
+                    double segL = Math.Max(1e-8, cumLen[idx + 1] - cumLen[idx]);
+                    double t = Math.Max(0.0, Math.Min(1.0, (targetS - cumLen[idx]) / segL));
+
+                    Plane p0 = inputFrames[idx];
+                    Plane p1 = inputFrames[idx + 1];
+                    Point3d orig = (1.0 - t) * p0.Origin + t * p1.Origin;
+                    Vector3d z = (1.0 - t) * p0.ZAxis + t * p1.ZAxis;
+                    if (z.Length < 1e-10) z = Vector3d.ZAxis;
+                    z.Unitize();
+                    Vector3d x = (1.0 - t) * p0.XAxis + t * p1.XAxis;
+                    x -= (x * z) * z;
+                    if (x.Length < 1e-10)
+                        x = Vector3d.CrossProduct(z, Math.Abs(z.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                    x.Unitize();
+                    Vector3d y = Vector3d.CrossProduct(z, x);
+                    y.Unitize();
+                    baseFrames[s] = new Plane(orig, x, y);
+                }
+            }
+
+            // 2. Gather obstacle sample points & normals for fast Tangent-Point Repulsive Shell evaluation
+            BoundingBox sceneBox = new BoundingBox(baseFrames[0].Origin, baseFrames[nSteps - 1].Origin);
+            for (int i = 0; i < nSteps; i++) sceneBox.Union(baseFrames[i].Origin);
+
+            var obsPts = new List<Point3d>();
+            var obsNrms = new List<Vector3d>();
+
+            if (obstacleMeshes != null)
+            {
+                foreach (Mesh om in obstacleMeshes)
+                {
+                    if (om == null || om.Vertices.Count == 0) continue;
+                    om.Normals.ComputeNormals();
+                    sceneBox.Union(om.GetBoundingBox(false));
+
+                    // Subsample obstacle vertices + face centers up to ~600 representative repulsive sites per mesh
+                    int vStride = Math.Max(1, om.Vertices.Count / 450);
+                    for (int v = 0; v < om.Vertices.Count; v += vStride)
+                    {
+                        obsPts.Add(om.Vertices[v]);
+                        Vector3d n = om.Normals.Count > v ? (Vector3d)om.Normals[v] : Vector3d.ZAxis;
+                        if (n.Length > 1e-10) n.Unitize();
+                        obsNrms.Add(n);
+                    }
+                    int fStride = Math.Max(1, om.Faces.Count / 250);
+                    for (int f = 0; f < om.Faces.Count; f += fStride)
+                    {
+                        obsPts.Add(om.Faces.GetFaceCenter(f));
+                        obsNrms.Add( Vector3d.ZAxis );
+                    }
+                }
+            }
+
+            double diag = Math.Max(10.0, sceneBox.Diagonal.Length);
+            double rSpindle = spindleRadiusInput > 1e-5 ? spindleRadiusInput : diag * 0.065;
+            double spindleLen = rSpindle * 4.2;
+
+            // Define robot wrist singularity axis (inline forearm alignment or downward self-collision cone)
+            Vector3d wristSingularityAxis = new Vector3d(0.0, -0.85, -0.52);
+            wristSingularityAxis.Unitize();
+            Point3d robotBaseColumn = sceneBox.Center - new Vector3d(0.0, diag * 0.65, 0.0);
+
+            // Helper: Evaluate Repulsive Shell Energy for a candidate Plane (TCP + Spindle Cylinder + Holder Plane + Singularity)
+            double EvaluateSpindleShellEnergy(Point3d tcp, Vector3d zAxis, out double minClearance)
+            {
+                zAxis.Unitize();
+                Vector3d uAx = Vector3d.CrossProduct(zAxis, Math.Abs(zAxis.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                uAx.Unitize();
+                Vector3d vAx = Vector3d.CrossProduct(zAxis, uAx);
+                vAx.Unitize();
+
+                // Sample 7 points along the Spindle Shell + Tool Holder Plane Disk
+                // 0: TCP tip, 1..3: Spindle shaft at 1.2R, 2.5R, 4.0R along +Z, 4..6: Holder Plane ring at 1.5R
+                Point3d[] shellPts = new Point3d[7];
+                double[] shellRadii = new double[7];
+
+                shellPts[0] = tcp + zAxis * (0.25 * rSpindle);
+                shellRadii[0] = 0.25 * rSpindle;
+
+                shellPts[1] = tcp + zAxis * (1.25 * rSpindle);
+                shellRadii[1] = 0.85 * rSpindle;
+
+                shellPts[2] = tcp + zAxis * (2.60 * rSpindle);
+                shellRadii[2] = 1.00 * rSpindle;
+
+                shellPts[3] = tcp + zAxis * spindleLen;
+                shellRadii[3] = 1.05 * rSpindle;
+
+                // Tool holder flange disk (checks if the Plane itself collides with geometry!)
+                Point3d flangeCenter = tcp + zAxis * (1.45 * rSpindle);
+                shellPts[4] = flangeCenter + uAx * (1.25 * rSpindle);
+                shellRadii[4] = 0.45 * rSpindle;
+                shellPts[5] = flangeCenter - uAx * (1.25 * rSpindle);
+                shellRadii[5] = 0.45 * rSpindle;
+                shellPts[6] = flangeCenter + vAx * (1.25 * rSpindle);
+                shellRadii[6] = 0.45 * rSpindle;
+
+                minClearance = diag;
+                double energy = 0.0;
+
+                // A. Tangent-Point Repulsive Shell Energy against Obstacles
+                int nObs = obsPts.Count;
+                for (int o = 0; o < nObs; o++)
+                {
+                    Point3d op = obsPts[o];
+                    for (int s = 0; s < 7; s++)
+                    {
+                        // For s == 0 (TCP tip) in Mode 0 (printing/milling on the mesh), allow TCP contact with the part
+                        if (mode == 0 && s == 0) continue;
+
+                        double d = shellPts[s].DistanceTo(op) - shellRadii[s];
+                        if (d < minClearance) minClearance = d;
+
+                        if (d <= 0.0)
+                        {
+                            // Collision penetration barrier
+                            double pen = Math.Abs(d) / Math.Max(1e-5, rSpindle);
+                            energy += 12.0 + 35.0 * pen * pen;
+                        }
+                        else if (d < 2.5 * rSpindle)
+                        {
+                            // Smooth Tangent-Point 1/d^2 repulsive shell falloff
+                            double ratio = rSpindle / Math.Max(0.05 * rSpindle, d);
+                            energy += 0.35 * ratio * ratio;
+                        }
+                    }
+                }
+
+                // B. Robot Kinematic Wrist Singularity & Self-Collision Energy
+                double singDot = zAxis * wristSingularityAxis;
+                if (singDot > 0.65)
+                {
+                    double sPen = (singDot - 0.65) / 0.35;
+                    energy += 8.5 * sPen * sPen;
+                }
+                // Prevent upside-down tool flips (zAxis.Z < -0.25)
+                if (zAxis.Z < -0.15)
+                {
+                    double flipPen = (-0.15 - zAxis.Z);
+                    energy += 14.0 * flipPen * flipPen;
+                }
+                // Self-collision with robot base column
+                double distBase = (tcp + zAxis * spindleLen).DistanceTo(robotBaseColumn);
+                if (distBase < 2.2 * rSpindle)
+                {
+                    double bPen = (2.2 * rSpindle - distBase) / Math.Max(1e-5, rSpindle);
+                    energy += 10.0 * bPen * bPen;
+                }
+
+                return energy;
+            }
+
+            // 3. Build the 2D Configuration-Space Energy Matrix E[i, j] and candidate states
+            double[,] cSpaceEnergy = new double[nSteps, nAngles];
+            double[,] cSpaceClearance = new double[nSteps, nAngles];
+            Point3d[,] candOrigins = new Point3d[nSteps, nAngles];
+            Vector3d[,] candZAxes = new Vector3d[nSteps, nAngles];
+
+            // Compute global arch direction for Mode 1 (Pick & Place obstacle avoidance)
+            Vector3d abVec = baseFrames[nSteps - 1].Origin - baseFrames[0].Origin;
+            if (abVec.Length < 1e-6) abVec = Vector3d.XAxis;
+            abVec.Unitize();
+            Vector3d upArch = Vector3d.ZAxis - (Vector3d.ZAxis * abVec) * abVec;
+            if (upArch.Length < 1e-6) upArch = Vector3d.YAxis;
+            upArch.Unitize();
+            Vector3d sideArch = Vector3d.CrossProduct(upArch, abVec);
+            sideArch.Unitize();
+
+            double maxTiltRad = 72.0 * (Math.PI / 180.0);
+
+            for (int i = 0; i < nSteps; i++)
+            {
+                double u = i / (double)(nSteps - 1);
+                Plane bf = baseFrames[i];
+                Vector3d z0 = bf.ZAxis;
+                z0.Unitize();
+
+                // Local tangent along path
+                Vector3d tang = (i < nSteps - 1)
+                    ? (baseFrames[i + 1].Origin - bf.Origin)
+                    : (bf.Origin - baseFrames[Math.Max(0, i - 1)].Origin);
+                if (tang.Length < 1e-8) tang = bf.XAxis;
+                tang.Unitize();
+
+                Vector3d side = Vector3d.CrossProduct(z0, tang);
+                if (side.Length < 1e-8)
+                    side = Vector3d.CrossProduct(z0, Math.Abs(z0.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                side.Unitize();
+                Vector3d fwd = Vector3d.CrossProduct(side, z0);
+                fwd.Unitize();
+
+                // Smooth arch envelope sin(pi * u) that is 0 at endpoints A and B
+                double archEnv = Math.Sin(Math.PI * u);
+
+                for (int j = 0; j < nAngles; j++)
+                {
+                    // Normalized parameter v in [-1, +1]
+                    double v = (2.0 * j) / (nAngles - 1.0) - 1.0;
+
+                    if (mode == 1)
+                    {
+                        // MODE 1: Pick & Place 3D Trajectory (A to B with Obstacles)
+                        // v explores a 3D arch + lateral bypass corridor around obstacles while keeping A and B fixed!
+                        double liftH = (0.38 * diag) * archEnv * (0.45 + 0.55 * Math.Abs(v));
+                        double sideOffset = (0.35 * diag) * archEnv * v;
+                        Point3d pos = bf.Origin + upArch * liftH + sideArch * sideOffset;
+
+                        // Automatically tilt the spindle away from the obstacle center as it bypasses
+                        Vector3d zCand = z0 + (0.45 * archEnv * v) * sideArch + (0.25 * archEnv) * upArch;
+                        zCand.Unitize();
+
+                        double e = EvaluateSpindleShellEnergy(pos, zCand, out double clr);
+                        // Also test slight forward/backward tilt at this position and keep the cleaner orientation
+                        Vector3d zAlt = zCand + (0.30 * archEnv) * abVec;
+                        zAlt.Unitize();
+                        double eAlt = EvaluateSpindleShellEnergy(pos, zAlt, out double clrAlt);
+                        if (eAlt < e)
+                        {
+                            e = eAlt;
+                            clr = clrAlt;
+                            zCand = zAlt;
+                        }
+
+                        candOrigins[i, j] = pos;
+                        candZAxes[i, j] = zCand;
+                        cSpaceEnergy[i, j] = e;
+                        cSpaceClearance[i, j] = clr;
+                    }
+                    else if (mode == 2)
+                    {
+                        // MODE 2: 2D Spherical Orientation Cone [Theta, Phi]
+                        double theta = (u * 2.0 - 1.0) * maxTiltRad;
+                        double phi = v * maxTiltRad;
+                        Vector3d zCand = Math.Cos(theta) * Math.Cos(phi) * z0
+                                       + Math.Sin(theta) * side
+                                       + Math.Cos(theta) * Math.Sin(phi) * fwd;
+                        zCand.Unitize();
+
+                        // Evaluate integrated energy along the trajectory for this spherical angle + at station i
+                        double e = EvaluateSpindleShellEnergy(bf.Origin, zCand, out double clr);
+                        candOrigins[i, j] = bf.Origin;
+                        candZAxes[i, j] = zCand;
+                        cSpaceEnergy[i, j] = e;
+                        cSpaceClearance[i, j] = clr;
+                    }
+                    else
+                    {
+                        // MODE 0 (Default): Fixed TCP on Printing/Milling Path + Spindle Tilt C-Space Geodesic
+                        double tiltAngle = v * maxTiltRad;
+                        Vector3d zSide = Math.Cos(tiltAngle) * z0 + Math.Sin(tiltAngle) * side;
+                        zSide.Unitize();
+
+                        double bestE = EvaluateSpindleShellEnergy(bf.Origin, zSide, out double bestClr);
+                        Vector3d bestZ = zSide;
+
+                        // Also check lead/lag tilt along tangent so spindle can dodge obstacles ahead/behind on the path
+                        for (int leadStep = -1; leadStep <= 1; leadStep += 2)
+                        {
+                            Vector3d zLead = zSide + (leadStep * 0.28 * Math.Abs(v)) * fwd;
+                            zLead.Unitize();
+                            double eLead = EvaluateSpindleShellEnergy(bf.Origin, zLead, out double clrLead);
+                            if (eLead + 0.05 < bestE)
+                            {
+                                bestE = eLead;
+                                bestClr = clrLead;
+                                bestZ = zLead;
+                            }
+                        }
+
+                        candOrigins[i, j] = bf.Origin;
+                        candZAxes[i, j] = bestZ;
+                        cSpaceEnergy[i, j] = bestE;
+                        cSpaceClearance[i, j] = bestClr;
+                    }
+                }
+            }
+
+            // 4. Solve the Global Riemannian Geodesic Path from A (i=0) to B (i=nSteps-1) across the 2D C-Space Manifold
+            //    Minimizing: sum_i [ w_elastic * ||q_{i+1} - q_i||^2 + w_repulsive * E(i, j_i) ]
+            double[,] dpCost = new double[nSteps, nAngles];
+            int[,] dpParent = new int[nSteps, nAngles];
+            int midJ = nAngles / 2;
+
+            for (int j = 0; j < nAngles; j++)
+            {
+                double startBias = (mode == 1) ? Math.Pow((j - midJ) / (double)midJ, 2) * 2.0 : 0.15 * Math.Pow((j - midJ) / (double)midJ, 2);
+                dpCost[0, j] = cSpaceEnergy[0, j] + startBias;
+                dpParent[0, j] = j;
+            }
+
+            for (int i = 1; i < nSteps; i++)
+            {
+                for (int j = 0; j < nAngles; j++)
+                {
+                    double bestPrev = double.MaxValue;
+                    int bestP = j;
+
+                    for (int k = 0; k < nAngles; k++)
+                    {
+                        // Riemannian transition metric: penalizes drastic spindle rotation + path jump
+                        double dAng = (candZAxes[i, j] - candZAxes[i - 1, k]).Length;
+                        double dGrid = Math.Abs(j - k) / (double)nAngles;
+                        double elasticStep = 3.2 * dAng * dAng + 4.5 * dGrid * dGrid;
+
+                        if (mode == 1)
+                        {
+                            double dPos = candOrigins[i, j].DistanceTo(candOrigins[i - 1, k]) / Math.Max(1e-4, diag / nSteps);
+                            elasticStep += 0.45 * dPos * dPos;
+                        }
+
+                        double candidateTotal = dpCost[i - 1, k] + elasticStep + cSpaceEnergy[i, j] + 0.08 * Math.Pow((j - midJ) / (double)midJ, 2);
+                        if (candidateTotal < bestPrev)
+                        {
+                            bestPrev = candidateTotal;
+                            bestP = k;
+                        }
+                    }
+
+                    dpCost[i, j] = bestPrev;
+                    dpParent[i, j] = bestP;
+                }
+            }
+
+            // Backtrack optimal geodesic index sequence j*(i) from B to A
+            int[] optJ = new int[nSteps];
+            double minEndCost = double.MaxValue;
+            int bestEndJ = midJ;
+            for (int j = 0; j < nAngles; j++)
+            {
+                double endBias = (mode == 1) ? Math.Pow((j - midJ) / (double)midJ, 2) * 2.0 : 0.15 * Math.Pow((j - midJ) / (double)midJ, 2);
+                if (dpCost[nSteps - 1, j] + endBias < minEndCost)
+                {
+                    minEndCost = dpCost[nSteps - 1, j] + endBias;
+                    bestEndJ = j;
+                }
+            }
+
+            optJ[nSteps - 1] = bestEndJ;
+            for (int i = nSteps - 1; i >= 1; i--)
+                optJ[i - 1] = dpParent[i, optJ[i]];
+
+            // 5. Continuous Repulsive Shell Smoothing (Laplacian Sobolev Preconditioned Flow on Positions & SO(3) Frames)
+            Point3d[] optOrigins = new Point3d[nSteps];
+            Vector3d[] optZ = new Vector3d[nSteps];
+            double[] smoothJ = new double[nSteps];
+            clearanceMarginPerStep = new double[nSteps];
+
+            for (int i = 0; i < nSteps; i++)
+            {
+                int j = optJ[i];
+                optOrigins[i] = candOrigins[i, j];
+                optZ[i] = candZAxes[i, j];
+                smoothJ[i] = j;
+                clearanceMarginPerStep[i] = cSpaceClearance[i, j];
+            }
+
+            // Smooth the geodesic trajectory & spindle axes while pushing away from obstacles (Repulsive Curves/Shells flow)
+            for (int iter = 0; iter < 12; iter++)
+            {
+                Point3d[] nextOrig = (Point3d[])optOrigins.Clone();
+                Vector3d[] nextZ = (Vector3d[])optZ.Clone();
+                double[] nextJ = (double[])smoothJ.Clone();
+
+                for (int i = 1; i < nSteps - 1; i++)
+                {
+                    // Smooth C-Space path coordinate
+                    nextJ[i] = 0.25 * smoothJ[i - 1] + 0.50 * smoothJ[i] + 0.25 * smoothJ[i + 1];
+
+                    // Smooth SO(3) spindle Z-axis
+                    Vector3d zAvg = 0.25 * optZ[i - 1] + 0.50 * optZ[i] + 0.25 * optZ[i + 1];
+                    if (zAvg.Length > 1e-10) zAvg.Unitize();
+                    else zAvg = optZ[i];
+
+                    Point3d pAvg = optOrigins[i];
+                    if (mode == 1)
+                    {
+                        // Smooth 3D Pick & Place curve while applying repulsive obstacle push
+                        pAvg = 0.25 * optOrigins[i - 1] + 0.50 * optOrigins[i] + 0.25 * optOrigins[i + 1];
+                        foreach (Point3d op in obsPts)
+                        {
+                            Vector3d diff = pAvg - op;
+                            double d = diff.Length;
+                            if (d < 1.8 * rSpindle && d > 1e-6)
+                            {
+                                diff.Unitize();
+                                pAvg += diff * (0.18 * (1.8 * rSpindle - d));
+                            }
+                        }
+                    }
+
+                    // Keep whichever orientation has lower repulsive shell energy
+                    double eSmooth = EvaluateSpindleShellEnergy(pAvg, zAvg, out double clrSmooth);
+                    double eCurr = EvaluateSpindleShellEnergy(optOrigins[i], optZ[i], out double clrCurr);
+                    if (eSmooth <= eCurr + 0.35)
+                    {
+                        nextOrig[i] = pAvg;
+                        nextZ[i] = zAvg;
+                        clearanceMarginPerStep[i] = clrSmooth;
+                    }
+                }
+
+                optOrigins = nextOrig;
+                optZ = nextZ;
+                smoothJ = nextJ;
+            }
+
+            // Reconstruct parallel-transported Robot Planes along the optimal trajectory
+            Vector3d prevX = baseFrames[0].XAxis - (baseFrames[0].XAxis * optZ[0]) * optZ[0];
+            if (prevX.Length < 1e-10)
+                prevX = Vector3d.CrossProduct(optZ[0], Math.Abs(optZ[0].X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+            prevX.Unitize();
+
+            for (int i = 0; i < nSteps; i++)
+            {
+                Vector3d z = optZ[i];
+                Vector3d x = prevX - (prevX * z) * z;
+                if (x.Length < 1e-10)
+                    x = Vector3d.CrossProduct(z, Math.Abs(z.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                x.Unitize();
+                prevX = x;
+                Vector3d y = Vector3d.CrossProduct(z, x);
+                y.Unitize();
+                optimalRobotPlanes.Add(new Plane(optOrigins[i], x, y));
+            }
+
+            // 6. Construct the 2D Configuration-Space (C-Space) Manifold Mesh & Geodesic Path Curve for Viewport Analysis
+            Point3d mapOrigin = new Point3d(sceneBox.Max.X + 0.28 * diag, sceneBox.Min.Y, sceneBox.Min.Z);
+            double mapWidth = 0.85 * diag;
+            double mapDepth = 0.52 * diag;
+            double mapMaxHeight = 0.22 * diag;
+
+            double maxVisE = 1e-6;
+            for (int i = 0; i < nSteps; i++)
+                for (int j = 0; j < nAngles; j++)
+                    if (cSpaceEnergy[i, j] > maxVisE) maxVisE = cSpaceEnergy[i, j];
+            maxVisE = Math.Min(maxVisE, 25.0);
+
+            for (int i = 0; i < nSteps; i++)
+            {
+                double u = i / (double)(nSteps - 1);
+                for (int j = 0; j < nAngles; j++)
+                {
+                    double v = j / (double)(nAngles - 1);
+                    double normE = Math.Min(1.0, Math.Log(1.0 + cSpaceEnergy[i, j]) / Math.Log(1.0 + maxVisE));
+                    double zHeight = normE * mapMaxHeight;
+
+                    Point3d ptMap = mapOrigin + new Vector3d(u * mapWidth, v * mapDepth, zHeight);
+                    cSpaceMapMesh.Vertices.Add(ptMap);
+                    // Collision & Singularity Heatmap: Deep Blue/Teal (0 = safe valley) -> Gold (0.5) -> Bright Red (1 = collision/singularity peak)
+                    int rCol = (int)Math.Max(0, Math.Min(255, normE < 0.5 ? (30 + normE * 2.0 * 215) : 245));
+                    int gCol = (int)Math.Max(0, Math.Min(255, normE < 0.5 ? (145 + normE * 2.0 * 75) : (220 - (normE - 0.5) * 2.0 * 185)));
+                    int bCol = (int)Math.Max(0, Math.Min(255, normE < 0.5 ? (220 - normE * 2.0 * 160) : (60 - (normE - 0.5) * 2.0 * 45)));
+                    cSpaceMapMesh.VertexColors.Add(Color.FromArgb(rCol, gCol, bCol));
+                }
+            }
+
+            for (int i = 0; i < nSteps - 1; i++)
+            {
+                for (int j = 0; j < nAngles - 1; j++)
+                {
+                    int v00 = i * nAngles + j;
+                    int v10 = (i + 1) * nAngles + j;
+                    int v11 = (i + 1) * nAngles + (j + 1);
+                    int v01 = i * nAngles + (j + 1);
+                    cSpaceMapMesh.Faces.AddFace(v00, v10, v11, v01);
+                }
+            }
+            cSpaceMapMesh.Normals.ComputeNormals();
+
+            // Extract the 2D Geodesic Path Polyline across the C-Space Map Mesh
+            for (int i = 0; i < nSteps; i++)
+            {
+                double u = i / (double)(nSteps - 1);
+                double v = Math.Max(0.0, Math.Min(1.0, smoothJ[i] / (nAngles - 1.0)));
+                int jIdx = Math.Max(0, Math.Min(nAngles - 1, (int)Math.Round(smoothJ[i])));
+                double normE = Math.Min(1.0, Math.Log(1.0 + cSpaceEnergy[i, jIdx]) / Math.Log(1.0 + maxVisE));
+                double zHeight = normE * mapMaxHeight + 0.008 * diag; // slightly lifted above mesh for crisp visibility
+                cSpaceGeodesicPath.Add(mapOrigin + new Vector3d(u * mapWidth, v * mapDepth, zHeight));
+            }
+
+            // 7. Build the 3D Spindle & Tool-Holder Shell Preview Mesh along the Trajectory
+            int shellStride = Math.Max(1, nSteps / 11);
+            int nSides = 12;
+            for (int i = 0; i < nSteps; i += shellStride)
+            {
+                Plane pl = optimalRobotPlanes[i];
+                Point3d tip = pl.Origin;
+                Point3d coneTop = tip + pl.ZAxis * (1.25 * rSpindle);
+                Point3d bodyTop = tip + pl.ZAxis * spindleLen;
+
+                int baseV = spindleShellPreviewMesh.Vertices.Count;
+                spindleShellPreviewMesh.Vertices.Add(tip); // baseV + 0
+
+                for (int k = 0; k < nSides; k++)
+                {
+                    double ang = (2.0 * Math.PI * k) / nSides;
+                    Vector3d radial = Math.Cos(ang) * pl.XAxis + Math.Sin(ang) * pl.YAxis;
+                    spindleShellPreviewMesh.Vertices.Add(coneTop + radial * (0.85 * rSpindle)); // ring 1: baseV + 1 + k
+                    spindleShellPreviewMesh.Vertices.Add(bodyTop + radial * rSpindle);          // ring 2: baseV + 1 + 2k + 1
+                }
+
+                Color cShell = cSpaceEnergy[i, optJ[i]] < 1.0
+                    ? Color.FromArgb(140, 60, 220, 180)
+                    : Color.FromArgb(160, 255, 140, 60);
+
+                for (int v = baseV; v < spindleShellPreviewMesh.Vertices.Count; v++)
+                    spindleShellPreviewMesh.VertexColors.Add(cShell);
+
+                for (int k = 0; k < nSides; k++)
+                {
+                    int kNext = (k + 1) % nSides;
+                    int r1_k = baseV + 1 + 2 * k;
+                    int r2_k = baseV + 2 + 2 * k;
+                    int r1_n = baseV + 1 + 2 * kNext;
+                    int r2_n = baseV + 2 + 2 * kNext;
+
+                    // Nozzle cone face
+                    spindleShellPreviewMesh.Faces.AddFace(baseV, r1_k, r1_n);
+                    // Spindle cylinder quad
+                    spindleShellPreviewMesh.Faces.AddFace(r1_k, r2_k, r2_n, r1_n);
+                }
+            }
+            spindleShellPreviewMesh.Normals.ComputeNormals();
+
+            return new Polyline(optOrigins);
+        }
     }
 }

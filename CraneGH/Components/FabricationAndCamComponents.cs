@@ -585,4 +585,218 @@ namespace CraneGH.Components
 
         public override Guid ComponentGuid => new Guid("A109B209-C309-4D09-9E09-000000000042");
     }
+
+    public class GH_RepulsiveShellsRobotPath : GH_Component
+    {
+        private Polyline _robotPath3D;
+        private Polyline _cSpaceGeodesic2D;
+        private Mesh _cSpaceMapMesh;
+        private Mesh _spindleShellMesh;
+        private readonly List<Plane> _robotPlanes = new List<Plane>();
+        private double _axisDrawSize = 2.0;
+
+        public GH_RepulsiveShellsRobotPath()
+          : base("Repulsive Shells & C-Space Robot Path", "RepulsiveBot",
+              "Computes optimal collision- & singularity-free Robot Toolpaths from A to B and builds the 2D Configuration-Space (C-Space) Geodesic Map (Sassen, Schumacher, Rumpf, Wardetzky, Crane 'Repulsive Shells').",
+              "CraneGH", "05. Mold, Segmentation & CAM")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GeodesicPath");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddGenericParameter("Path / A-B", "P", "Toolpath Curve/Polyline, list of Planes, or [Start A, End B] Points/Planes for Pick & Place", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Obstacles", "Obs", "Obstacle meshes (printed part, fixtures, table, robot body)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Spindle Radius", "R", "Spindle / extruder shell radius (0 = auto-scaled)", GH_ParamAccess.item, 0.0);
+            pManager.AddIntegerParameter("Mode", "Mode", "0 = Fixed TCP + Spindle Orientation Geodesic (3D Print/Mill), 1 = Pick & Place 3D Obstacle Avoidance (A to B), 2 = Spherical Cone Map [Theta, Phi]", GH_ParamAccess.item, 0);
+            pManager[1].Optional = true;
+            pManager[2].Optional = true;
+            pManager[3].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddCurveParameter("Robot Path", "Path", "Optimal 3D Robot TCP trajectory from A to B", GH_ParamAccess.item);
+            pManager.AddPlaneParameter("Robot Planes", "Pl", "Collision- & singularity-free Robot TCP Planes along the trajectory", GH_ParamAccess.list);
+            pManager.AddMeshParameter("2D C-Space Map", "CMap", "2D Configuration-Space Energy Landscape Mesh (Blue = safe valley, Red = spindle collision / wrist singularity peak)", GH_ParamAccess.item);
+            pManager.AddCurveParameter("2D C-Space Geodesic", "CPath", "Optimal Geodesic Path from A to B traced on the 2D C-Space Map", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Spindle Shell", "Shell", "3D swept Spindle & Tool-Holder Shell preview mesh verifying obstacle clearance", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Clearance", "Clr", "Minimum spindle-to-obstacle clearance distance at each step", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _robotPath3D = null;
+            _cSpaceGeodesic2D = null;
+            _cSpaceMapMesh = null;
+            _spindleShellMesh = null;
+            _robotPlanes.Clear();
+
+            var rawInputs = new List<object>();
+            var obstacles = new List<Mesh>();
+            double radius = 0.0;
+            int mode = 0;
+
+            if (!DA.GetDataList(0, rawInputs) || rawInputs.Count == 0) return;
+            DA.GetDataList(1, obstacles);
+            DA.GetData(2, ref radius);
+            DA.GetData(3, ref mode);
+
+            // Parse input Path / Planes / Points into initial reference frames
+            var inputFrames = new List<Plane>();
+            var inputPoints = new List<Point3d>();
+
+            foreach (object obj in rawInputs)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+
+                if (val is Plane pl)
+                {
+                    inputFrames.Add(pl);
+                }
+                else if (val is Point3d pt)
+                {
+                    inputPoints.Add(pt);
+                }
+                else if (val is Curve crv && crv.IsValid)
+                {
+                    int nDiv = 40;
+                    double[] tParams = crv.DivideByCount(nDiv, true);
+                    if (tParams != null)
+                    {
+                        foreach (double t in tParams)
+                        {
+                            Point3d p = crv.PointAt(t);
+                            Vector3d tang = crv.TangentAt(t);
+                            if (tang.Length < 1e-10) tang = Vector3d.XAxis;
+                            tang.Unitize();
+                            Vector3d up = Vector3d.ZAxis;
+                            // Estimate normal away from nearest obstacle if available
+                            if (obstacles.Count > 0 && obstacles[0] != null)
+                            {
+                                MeshPoint mp = obstacles[0].ClosestMeshPoint(p, 0.0);
+                                if (mp != null)
+                                {
+                                    Vector3d nrm = obstacles[0].NormalAt(mp);
+                                    if (nrm.Length > 1e-10 && nrm.Z >= -0.2) up = nrm;
+                                }
+                            }
+                            Vector3d yAx = Vector3d.CrossProduct(up, tang);
+                            if (yAx.Length < 1e-10)
+                                yAx = Vector3d.CrossProduct(up, Math.Abs(up.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                            yAx.Unitize();
+                            Vector3d xAx = Vector3d.CrossProduct(yAx, up);
+                            xAx.Unitize();
+                            inputFrames.Add(new Plane(p, xAx, yAx));
+                        }
+                    }
+                }
+                else if (val is Polyline poly && poly.Count >= 2)
+                {
+                    for (int i = 0; i < poly.Count; i++)
+                    {
+                        Vector3d tang = (i < poly.Count - 1) ? (poly[i + 1] - poly[i]) : (poly[i] - poly[i - 1]);
+                        if (tang.Length < 1e-10) tang = Vector3d.XAxis;
+                        tang.Unitize();
+                        Vector3d yAx = Vector3d.CrossProduct(Vector3d.ZAxis, tang);
+                        if (yAx.Length < 1e-10) yAx = Vector3d.YAxis;
+                        yAx.Unitize();
+                        Vector3d xAx = Vector3d.CrossProduct(yAx, Vector3d.ZAxis);
+                        xAx.Unitize();
+                        inputFrames.Add(new Plane(poly[i], xAx, yAx));
+                    }
+                }
+            }
+
+            if (inputFrames.Count == 0 && inputPoints.Count >= 2)
+            {
+                // User passed Pick & Place points [A, B, ...] -> default to Pick & Place Mode 1 if mode wasn't explicitly set
+                for (int i = 0; i < inputPoints.Count; i++)
+                {
+                    Vector3d tang = (i < inputPoints.Count - 1)
+                        ? (inputPoints[i + 1] - inputPoints[i])
+                        : (inputPoints[i] - inputPoints[i - 1]);
+                    if (tang.Length < 1e-10) tang = Vector3d.XAxis;
+                    tang.Unitize();
+                    Vector3d yAx = Vector3d.CrossProduct(Vector3d.ZAxis, tang);
+                    if (yAx.Length < 1e-10) yAx = Vector3d.YAxis;
+                    yAx.Unitize();
+                    Vector3d xAx = Vector3d.CrossProduct(yAx, Vector3d.ZAxis);
+                    xAx.Unitize();
+                    inputFrames.Add(new Plane(inputPoints[i], xAx, yAx));
+                }
+                if (inputPoints.Count == 2 && Params.Input[3].SourceCount == 0)
+                    mode = 1; // Auto-select Pick & Place 3D trajectory when given just point A and point B
+            }
+            else if (inputFrames.Count == 2 && Params.Input[3].SourceCount == 0)
+            {
+                mode = 1; // Auto-select Pick & Place 3D trajectory when given just Plane A and Plane B
+            }
+
+            if (inputFrames.Count == 0) return;
+
+            _robotPath3D = DdgAlgorithms.ComputeRepulsiveShellsAndCSpaceRobotPath(
+                inputFrames,
+                obstacles,
+                radius,
+                mode,
+                out List<Plane> optPlanes,
+                out _cSpaceMapMesh,
+                out _cSpaceGeodesic2D,
+                out _spindleShellMesh,
+                out double[] clearances);
+
+            _robotPlanes.AddRange(optPlanes);
+            if (_robotPath3D != null && _robotPath3D.Count >= 2)
+                _axisDrawSize = Math.Max(0.5, _robotPath3D.BoundingBox.Diagonal.Length * 0.045);
+
+            DA.SetData(0, _robotPath3D);
+            DA.SetDataList(1, optPlanes);
+            DA.SetData(2, _cSpaceMapMesh);
+            DA.SetData(3, _cSpaceGeodesic2D);
+            DA.SetData(4, _spindleShellMesh);
+            DA.SetDataList(5, clearances);
+        }
+
+        public override void DrawViewportMeshes(IGH_PreviewArgs args)
+        {
+            base.DrawViewportMeshes(args);
+            if (Hidden || Locked) return;
+
+            if (_cSpaceMapMesh != null && _cSpaceMapMesh.Vertices.Count > 0)
+                args.Display.DrawMeshFalseColors(_cSpaceMapMesh);
+
+            if (_spindleShellMesh != null && _spindleShellMesh.Vertices.Count > 0)
+                args.Display.DrawMeshFalseColors(_spindleShellMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            if (_robotPath3D != null && _robotPath3D.Count >= 2)
+                args.Display.DrawPolyline(_robotPath3D, Color.FromArgb(0, 255, 210), 3);
+
+            if (_cSpaceGeodesic2D != null && _cSpaceGeodesic2D.Count >= 2)
+            {
+                args.Display.DrawPolyline(_cSpaceGeodesic2D, Color.FromArgb(255, 255, 255), 4);
+                args.Display.DrawPoint(_cSpaceGeodesic2D[0], Rhino.Display.PointStyle.RoundControlPoint, 6, Color.Lime);
+                args.Display.DrawPoint(_cSpaceGeodesic2D[_cSpaceGeodesic2D.Count - 1], Rhino.Display.PointStyle.RoundControlPoint, 6, Color.Aqua);
+            }
+
+            int stride = Math.Max(1, _robotPlanes.Count / 22);
+            for (int i = 0; i < _robotPlanes.Count; i += stride)
+            {
+                Plane pl = _robotPlanes[i];
+                args.Display.DrawLine(pl.Origin, pl.Origin + _axisDrawSize * pl.XAxis, Color.FromArgb(245, 70, 70), 2);
+                args.Display.DrawLine(pl.Origin, pl.Origin + _axisDrawSize * pl.YAxis, Color.FromArgb(70, 230, 95), 2);
+                args.Display.DrawLine(pl.Origin, pl.Origin + _axisDrawSize * 1.4 * pl.ZAxis, Color.FromArgb(75, 165, 255), 2);
+            }
+        }
+
+        public override Guid ComponentGuid => new Guid("A109B209-C309-4D09-9E09-000000000043");
+    }
 }

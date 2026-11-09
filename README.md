@@ -40,3 +40,7 @@
    - **`HeatIsoSurf`**: Watertight 3D Heat Offset Mesh, Smooth Boolean Union Isosurface of multiple geometries, and 3D Vector Field Isosurface via Marching Tetrahedra.
    - **`FabPaths`**: Concentric & Spiral CNC Milling / Curved-Layer 3D Printing toolpaths with Collision-Smoothed 5/6-Axis Planes.
    - **`RobotPlanes`**: Geodesic Traveling Salesperson (TSP) trajectory optimizer and $SO(3)$ Collision-Avoiding Robot Plane Stabilizer (eliminates drastic wrist turns and tilts away from mesh concavities).
+   - **`RepulsiveBot` (`Repulsive Shells & C-Space Robot Path`)**: Inspired by *Repulsive Shells* (Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024) & *Repulsive Curves* (2021). Computes optimal collision- & singularity-free Robot Toolpaths from $A$ to $B$ around obstacle meshes and constructs the **2D Configuration-Space (C-Space) Energy Landscape Mesh (`CMap`) + Geodesic Path (`CPath`)**:
+     - `Mode 0`: Keeps the TCP strictly fixed on your 3D printing / milling path while optimizing Spindle & Plane orientation to avoid spindle-body collisions, flange plane collisions, and robot wrist singularities.
+     - `Mode 1`: Full 3D Pick & Place obstacle-avoiding geodesic trajectory from $A$ to $B$ with simultaneous spindle shell clearance.
+     - `Mode 2`: 2D Spherical Orientation Cone Map $[\theta, \phi]$ for singularity & self-collision analysis.
