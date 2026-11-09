@@ -26,13 +26,19 @@
    - **`OptField`**: Globally Optimal $N$-Direction Fields ($N = 1, 2, 4, 6$).
    - **`VecHeat`**: Parallel transport of tangent vectors via the Vector Heat Method.
    - **`VecFamily`**: Quantizes continuous tangent vector fields into a discrete Family of Vectors and segments faces by vector family.
-   - **`Streamlines`** & **`VecView`**: Streamline integration and 3D viewport vector/cross glyph display.
+   - **`GuidedFlow` (`Scalar-Weighted Vector Flow & Geodesic`)**: Combines a **Vector Field (`V`)** with a **Scalar Relevance Field `W` in `[0..1]`** (`0` = avoid / do not pass, `1` = high priority / attract). Actively pushes trajectories uphill via $+\nabla W$ into `1`-zones while surfing along `V`, computes the **Anisotropic Geodesic Path (`ABPath`)**, and outputs **5/6-Axis Fabrication Planes**.
+   - **`VecView` (`Vector, Cross & Gradient Inspector`)**: Multi-mode visualizer & differential analyzer on meshes:
+     - `0`: Directed Vector Arrows + Magnitude Heatmap
+     - `1`: 4-RoSy Symmetric Crosses ($U/V$ orthogonal frames)
+     - `2`: Geodesic Gradient Arrows + Orthogonal Wavefront Ticks
+     - `3`: Covariant Vector Gradient ($\|\nabla \mathbf{V}\|$), Discrete Divergence ($\nabla \cdot \mathbf{V}$), and Rotor/Curl ($(\nabla \times \mathbf{V}) \cdot \mathbf{N}$)
 
 4. **`04. Stripes & Conformal`**
    - **`Stripes`** & **`CrossQuads`**: Equidistant stripe patterns with topological bifurcations and orthogonal quad grids at exact physical spacing $D$.
    - **`BFF`**, **`Auxetics`**, **`SpinXForm`**: Boundary First Flattening, Deployable Auxetic kirigami mechanisms, and Quaternion Dirac Spin conformal deformations.
 
 5. **`05. Mold, Segmentation & CAM`**
+   - **`CurvSeg` (`Curvature Regime & Inflection Cutter`)**: Segments a mesh into **Concave** (`Ccv`) and **Convex** (`Cvx`) pieces by placing subdivision cut lines at **Zero-Curvature Inflection $H = T$ (`Mode 0`)**, **Curvature Maxima Ridges (`Mode 1`, leaving concave basins)**, **Curvature Minima Valleys (`Mode 2`, leaving convex lobes)**, or **3-Regime Concave/Flat/Convex Bands (`Mode 3`)**.
    - **`MultiMold` (`Multi-Piece Mold & Draft Cut`)**: Partitions complex 3D meshes into $K$ extractable mold pieces combining **Multiple Pull Vectors** (or automatic **Curvature-driven pull discovery**) + **Heat Geodesic Distance** (preventing disconnected islands) + **Curvature Ridge Parting Line snapping** + **Undercut detection**.
    - **`KMeansSeg`** & **`VarCuts`**: Variational K-Means++ normal/vector/crease clustering and Sharp & Crane (2018) Variational Surface Cuts.
    - **`RollSphere`**: Tangent-Point Rolling Spheres (Repulsive Surfaces 2021) for CNC Ball-Mill gouge detection (`+R`), interior medial wall thickness (`-R`), and collision-free mesh offsetting.

@@ -324,4 +324,84 @@ namespace CraneGH.Components
 
         public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000037");
     }
+
+    public class GH_CurvatureRegimeSegmentation : GH_Component
+    {
+        private readonly List<Polyline> _cutSeams = new List<Polyline>();
+
+        public GH_CurvatureRegimeSegmentation()
+          : base("Curvature Regime & Inflection Cutter", "CurvSeg",
+              "Segments a mesh into Concave and Convex pieces by placing subdivision cut lines at Curvature = 0 Inflection (0), Curvature Maxima Ridges (1), Curvature Minima Valleys (2), or 3-Regime Concave/Flat/Convex Threshold Bands (3).",
+              "CraneGH", "05. Mold, Segmentation & CAM")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("IsoCut");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D mesh to segment by curvature regime", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Cut Mode", "Mode", "0 = Cut at Inflection / Threshold (H = T -> Concave vs Convex), 1 = Cut Along Curvature Maxima Ridges (leaves Concave Basins), 2 = Cut Along Curvature Minima Valleys (leaves Convex Lobes), 3 = 3-Regime Band Split (Concave / Flat / Convex)", GH_ParamAccess.item, 0);
+            pManager.AddNumberParameter("Threshold", "T", "Normalized curvature cut threshold in [-1..+1] (0.0 = exact zero-curvature inflection line, + = convex ridge, - = concave valley)", GH_ParamAccess.item, 0.0);
+            pManager.AddNumberParameter("Smoothness", "S", "Curvature smoothing strength for clean subdivision seams", GH_ParamAccess.item, 3.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("All Pieces", "SM", "All segmented connected mesh pieces", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Convex Pieces", "Cvx", "Extracted Convex mesh pieces (H >= T)", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Concave Pieces", "Ccv", "Extracted Concave mesh pieces (H < T)", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Subdivision Lines", "Cut", "Subdivision cut curves at inflection (H=0), curvature maxima ridges, or curvature minima valleys", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Signed Curvature", "H", "Normalized signed curvature in [-1..+1] (-1 = concave valley, 0 = zero inflection, +1 = convex peak)", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Curvature Mesh", "CM", "Mesh colored by Concave (Blue) / Zero Inflection (White) / Convex (Red)", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _cutSeams.Clear();
+
+            Mesh m = null;
+            int mode = 0;
+            double thresh = 0.0;
+            double smooth = 3.0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref mode);
+            DA.GetData(2, ref thresh);
+            DA.GetData(3, ref smooth);
+
+            var ddg = new DdgMesh(m);
+            List<Mesh> allPieces = DdgAlgorithms.ComputeCurvatureRegimeSegmentation(
+                ddg,
+                mode,
+                thresh,
+                smooth,
+                out List<Mesh> convexPieces,
+                out List<Mesh> concavePieces,
+                out List<Polyline> cutCurves,
+                out double[] normCurv,
+                out Mesh coloredMesh);
+
+            _cutSeams.AddRange(cutCurves);
+
+            DA.SetDataList(0, allPieces);
+            DA.SetDataList(1, convexPieces);
+            DA.SetDataList(2, concavePieces);
+            DA.SetDataList(3, cutCurves);
+            DA.SetDataList(4, normCurv);
+            DA.SetData(5, coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _cutSeams.Count == 0) return;
+
+            Color cCut = Attributes.Selected ? Color.FromArgb(255, 245, 60) : Color.FromArgb(255, 255, 255);
+            foreach (var pl in _cutSeams)
+                args.Display.DrawPolyline(pl, cCut, 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000045");
+    }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Types;
 using Rhino.Geometry;
 using CraneGH.Core;
 
@@ -499,13 +500,13 @@ namespace CraneGH.Components
     {
         private readonly List<Line> _primaryLines = new List<Line>();
         private readonly List<Line> _secondaryLines = new List<Line>();
-        private readonly List<Point3d> _anchors = new List<Point3d>();
-        private readonly List<Vector3d> _arrowDirs = new List<Vector3d>();
-        private int _displayMode = 1;
+        private readonly List<Color> _glyphColors = new List<Color>();
+        private Mesh _coloredMesh;
+        private int _displayMode = 0;
 
         public GH_MeshFieldDisplay()
-          : base("Mesh Field Display", "VecView",
-              "Displays any per-vertex or per-face vector, line (2-RoSy), or cross (4-RoSy) field directly on the mesh without needing to extract anchor points manually.",
+          : base("Vector, Cross & Gradient Inspector", "VecView",
+              "Visualizes Vector Arrows (0), 4-RoSy Cross Fields (1), Geodesic Gradients + Wavefront Ticks (2), and Covariant Vector Gradients / Divergence / Curl (3) on a mesh.",
               "CraneGH", "03. Vector & Direction Fields")
         {
         }
@@ -515,101 +516,87 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddVectorParameter("Field Vectors", "F", "Vectors per vertex or per face (automatically matches vertex or face centers)", GH_ParamAccess.list);
+            int idxF = pManager.AddGenericParameter("Vectors or Scalars", "F", "Tangent Vectors (Vector3d) or Scalar Field (double) to compute Geodesic Gradient (leave empty for Principal Curvature Cross Field)", GH_ParamAccess.list);
+            pManager[idxF].Optional = true;
             pManager.AddNumberParameter("Scale", "S", "Visual length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
-            pManager.AddIntegerParameter("Style", "N", "1 = Directed Arrows, 2 = Centered Line Ticks (2-RoSy), 4 = Orthogonal Crosses (4-RoSy)", GH_ParamAccess.item, 1);
+            pManager.AddIntegerParameter("Mode", "Mode", "0 = Vector Arrows + Magnitude, 1 = 4-RoSy Symmetric Crosses, 2 = Geodesic Gradient Arrows + Wavefront Ticks, 3 = Covariant Vector Gradient + Divergence/Curl", GH_ParamAccess.item, 0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Field Lines", "L", "3D line segments representing the vector/cross field on the mesh", GH_ParamAccess.list);
-            pManager.AddPointParameter("Anchor Points", "P", "3D anchor points (vertex or face centers) where each vector is placed", GH_ParamAccess.list);
+            pManager.AddLineParameter("Primary Lines", "L", "Primary 3D vector arrows or U-cross lines", GH_ParamAccess.list);
+            pManager.AddLineParameter("Cross / Ortho Lines", "Crx", "Orthogonal 4-RoSy V-cross lines or iso-wavefront ticks", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Vector Gradient", "VG", "Covariant Vector Gradient (direction & rate of spatial change of the vector field)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Divergence", "Div", "Discrete Divergence (div V) per vertex", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Curl / Rotor", "Curl", "Discrete Curl ((nabla x V) . N) per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by Magnitude (0), Curl (1), Geodesic Slope (2), or Vector Gradient Norm (3)", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             _primaryLines.Clear();
             _secondaryLines.Clear();
-            _anchors.Clear();
-            _arrowDirs.Clear();
+            _glyphColors.Clear();
+            _coloredMesh = null;
 
             Mesh m = null;
-            var vecs = new List<Vector3d>();
+            var rawItems = new List<object>();
             double scale = 0.75;
-            int mode = 1;
+            int mode = 0;
+
             if (!DA.GetData(0, ref m) || m == null) return;
-            if (!DA.GetDataList(1, vecs) || vecs.Count == 0) return;
+            DA.GetDataList(1, rawItems);
             DA.GetData(2, ref scale);
             DA.GetData(3, ref mode);
 
-            _displayMode = mode <= 1 ? 1 : (mode >= 4 ? 4 : 2);
+            // Map legacy style values (4 -> 1 for 4-RoSy Crosses)
+            if (mode == 4) mode = 1;
+            _displayMode = Math.Max(0, Math.Min(3, mode));
+
+            var inVecs = new List<Vector3d>();
+            var inScalars = new List<double>();
+
+            foreach (object obj in rawItems)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is Vector3d v) inVecs.Add(v);
+                else if (val is Point3d pt) inVecs.Add(new Vector3d(pt.X, pt.Y, pt.Z));
+                else if (val is double d) inScalars.Add(d);
+                else if (val is int iv) inScalars.Add(iv);
+            }
+
+            if (inScalars.Count > 0 && inVecs.Count == 0 && Params.Input[3].SourceCount == 0)
+            {
+                // Auto-switch to Geodesic Gradient + Wavefront Ticks if user connected a scalar field
+                _displayMode = 2;
+            }
+
             var ddg = new DdgMesh(m);
-            double drawLen = Math.Max(1e-5, scale * ddg.MeanEdgeLength);
+            DdgAlgorithms.ComputeVectorFieldGradientsAndGlyphs(
+                ddg,
+                inVecs.Count > 0 ? inVecs : null,
+                inScalars.Count > 0 ? inScalars : null,
+                scale,
+                _displayMode,
+                out List<Line> primLines,
+                out List<Line> orthoLines,
+                out Vector3d[] covGrad,
+                out double[] div,
+                out double[] curl,
+                out _coloredMesh,
+                out List<Color> cols);
 
-            var outLines = new List<Line>();
+            _primaryLines.AddRange(primLines);
+            _secondaryLines.AddRange(orthoLines);
+            _glyphColors.AddRange(cols);
 
-            // Automatically detect if vectors correspond to Faces or Vertices
-            bool isFaceField = (vecs.Count == ddg.FaceCount && ddg.FaceCount != ddg.VertexCount)
-                            || (vecs.Count == m.Faces.Count && m.Faces.Count != m.Vertices.Count);
-
-            if (isFaceField)
-            {
-                int count = Math.Min(ddg.FaceCount, vecs.Count);
-                for (int f = 0; f < count; f++)
-                {
-                    int[] fv = ddg.Faces[f];
-                    Point3d center = (ddg.Positions[fv[0]] + ddg.Positions[fv[1]] + ddg.Positions[fv[2]]) / 3.0;
-                    Vector3d n = ddg.FaceNormals[f];
-                    AddFieldGlyph(center, vecs[f], n, drawLen, _displayMode, outLines);
-                }
-            }
-            else
-            {
-                Vector3d[] mapped = ddg.MapVectorInputToVertices(vecs);
-                for (int v = 0; v < ddg.VertexCount; v++)
-                {
-                    AddFieldGlyph(ddg.Positions[v], mapped[v], ddg.VertexNormals[v], drawLen, _displayMode, outLines);
-                }
-            }
-
-            DA.SetDataList(0, outLines);
-            DA.SetDataList(1, _anchors);
-        }
-
-        private void AddFieldGlyph(Point3d p, Vector3d v, Vector3d normal, double drawLen, int mode, List<Line> outLines)
-        {
-            if (!v.IsValid || v.Length < 1e-12) return;
-            Vector3d dir = v;
-            dir.Unitize();
-
-            _anchors.Add(p);
-
-            if (mode == 1)
-            {
-                Line ln = new Line(p, p + dir * drawLen);
-                _primaryLines.Add(ln);
-                _arrowDirs.Add(dir);
-                outLines.Add(ln);
-            }
-            else if (mode == 2)
-            {
-                double half = 0.5 * drawLen;
-                Line ln = new Line(p - dir * half, p + dir * half);
-                _primaryLines.Add(ln);
-                outLines.Add(ln);
-            }
-            else
-            {
-                double half = 0.5 * drawLen;
-                Vector3d ortho = Vector3d.CrossProduct(normal, dir);
-                if (ortho.Length > 1e-12) ortho.Unitize();
-                Line lnU = new Line(p - dir * half, p + dir * half);
-                Line lnV = new Line(p - ortho * half, p + ortho * half);
-                _primaryLines.Add(lnU);
-                _secondaryLines.Add(lnV);
-                outLines.Add(lnU);
-                outLines.Add(lnV);
-            }
+            DA.SetDataList(0, primLines);
+            DA.SetDataList(1, orthoLines);
+            DA.SetDataList(2, covGrad);
+            DA.SetDataList(3, div);
+            DA.SetDataList(4, curl);
+            DA.SetData(5, _coloredMesh);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
@@ -617,25 +604,145 @@ namespace CraneGH.Components
             base.DrawViewportWires(args);
             if (Hidden || Locked || _primaryLines.Count == 0) return;
 
-            Color cPrimary = Attributes.Selected ? Color.FromArgb(255, 230, 50) : Color.FromArgb(0, 215, 255);
-            Color cSecondary = Attributes.Selected ? Color.FromArgb(255, 140, 60) : Color.FromArgb(245, 85, 70);
+            Color cOrtho = Attributes.Selected ? Color.FromArgb(255, 160, 70) : Color.FromArgb(245, 95, 80);
 
             if (_displayMode == 1)
             {
+                // 4-RoSy Crosses: draw U and V axes cleanly
                 for (int i = 0; i < _primaryLines.Count; i++)
                 {
-                    args.Display.DrawArrow(_primaryLines[i], cPrimary);
+                    Color cU = i < _glyphColors.Count ? _glyphColors[i] : Color.FromArgb(0, 220, 255);
+                    args.Display.DrawLine(_primaryLines[i], cU, 2);
                 }
+                if (_secondaryLines.Count > 0)
+                    args.Display.DrawLines(_secondaryLines, cOrtho, 2);
             }
             else
             {
-                args.Display.DrawLines(_primaryLines, cPrimary, 2);
-                if (_secondaryLines.Count > 0)
-                    args.Display.DrawLines(_secondaryLines, cSecondary, 2);
+                // Modes 0, 2, 3: Draw primary arrows + secondary ticks/crosses
+                for (int i = 0; i < _primaryLines.Count; i++)
+                {
+                    Color cA = Attributes.Selected ? Color.FromArgb(255, 235, 60)
+                             : (i < _glyphColors.Count ? _glyphColors[i] : Color.FromArgb(0, 220, 255));
+                    args.Display.DrawArrow(_primaryLines[i], cA);
+                }
+                if ((_displayMode == 2 || _displayMode == 3) && _secondaryLines.Count > 0)
+                {
+                    args.Display.DrawLines(_secondaryLines, Color.FromArgb(190, 255, 255, 255), 1);
+                }
             }
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000031");
+    }
+
+    public class GH_ScalarWeightedVectorFlow : GH_Component
+    {
+        private readonly List<Polyline> _flowPaths = new List<Polyline>();
+        private Polyline _abGeodesic;
+        private readonly List<Line> _guidedArrows = new List<Line>();
+        private Mesh _relMesh;
+
+        public GH_ScalarWeightedVectorFlow()
+          : base("Scalar-Weighted Vector Flow & Geodesic", "GuidedFlow",
+              "Combines a Vector Field (V) with a Scalar Relevance Field W in [0..1] (0 = avoid / do not pass, 1 = high importance / attract). Pushes trajectories toward 1-zones via +grad(W) while traveling along V, and extracts Fabrication Toolpaths & Planes.",
+              "CraneGH", "03. Vector & Direction Fields")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("FlowLines");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxV = pManager.AddVectorParameter("Vector Field", "V", "Guidance tangent vector field per vertex or face (leave empty for principal curvature direction)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            int idxW = pManager.AddNumberParameter("Relevance Scalar [0..1]", "W", "Scalar importance field where 0 = avoid / forbidden and 1 = high priority / attract (auto-normalized to [0..1])", GH_ParamAccess.list);
+            pManager[idxW].Optional = true;
+            int idxP = pManager.AddPointParameter("Start / A-B Points", "P", "Seed points or [A, B] waypoints on the mesh (leave empty for automatic seeding in high-relevance W=1 zones)", GH_ParamAccess.list);
+            pManager[idxP].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddCurveParameter("Guided Flow Paths", "Paths", "Toolpaths traveling along Vector Field V while pushed into W=1 zones and repelled from W=0", GH_ParamAccess.list);
+            pManager.AddCurveParameter("A-B Relevance Geodesic", "ABPath", "Optimal Anisotropic Geodesic Path between points in P surfing the W=1 highway along V", GH_ParamAccess.item);
+            pManager.AddVectorParameter("Guided Vector Field", "GV", "Combined Drift-Advection Vector Field U = W*V + grad(W) per vertex", GH_ParamAccess.list);
+            pManager.AddPlaneParameter("Fabrication Planes", "Pl", "5/6-Axis Fabrication Planes oriented along the guided toolpaths", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Relevance Mesh", "CM", "Mesh colored by normalized Relevance W in [0..1] (Blue = 0 avoid, Gold/Red = 1 attract)", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _flowPaths.Clear();
+            _abGeodesic = null;
+            _guidedArrows.Clear();
+            _relMesh = null;
+
+            Mesh m = null;
+            var inVecs = new List<Vector3d>();
+            var inWeights = new List<double>();
+            var inPoints = new List<Point3d>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, inVecs);
+            DA.GetDataList(2, inWeights);
+            DA.GetDataList(3, inPoints);
+
+            var ddg = new DdgMesh(m);
+            List<Polyline> paths = DdgAlgorithms.ComputeScalarWeightedVectorGuidedToolpaths(
+                ddg,
+                inVecs.Count > 0 ? inVecs : null,
+                inWeights.Count > 0 ? inWeights : null,
+                inPoints.Count > 0 ? inPoints : null,
+                out _abGeodesic,
+                out Vector3d[] guidedVecs,
+                out List<Plane> fabPlanes,
+                out _relMesh,
+                out double[] normW);
+
+            _flowPaths.AddRange(paths);
+
+            double arrowLen = 0.65 * ddg.MeanEdgeLength;
+            int stride = Math.Max(1, ddg.VertexCount / 400);
+            for (int i = 0; i < ddg.VertexCount; i += stride)
+            {
+                if (guidedVecs[i].Length > 1e-12 && normW[i] > 0.08)
+                {
+                    _guidedArrows.Add(new Line(ddg.Positions[i], ddg.Positions[i] + arrowLen * guidedVecs[i]));
+                }
+            }
+
+            DA.SetDataList(0, paths);
+            DA.SetData(1, _abGeodesic);
+            DA.SetDataList(2, guidedVecs);
+            DA.SetDataList(3, fabPlanes);
+            DA.SetData(4, _relMesh);
+        }
+
+        public override void DrawViewportMeshes(IGH_PreviewArgs args)
+        {
+            base.DrawViewportMeshes(args);
+            if (Hidden || Locked || _relMesh == null) return;
+            args.Display.DrawMeshFalseColors(_relMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            for (int i = 0; i < _guidedArrows.Count; i++)
+                args.Display.DrawArrow(_guidedArrows[i], Color.FromArgb(170, 255, 255, 255));
+
+            foreach (var pl in _flowPaths)
+                args.Display.DrawPolyline(pl, Color.FromArgb(0, 255, 215), 2);
+
+            if (_abGeodesic != null && _abGeodesic.Count >= 2)
+                args.Display.DrawPolyline(_abGeodesic, Color.FromArgb(255, 245, 50), 4);
+        }
+
+        public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000044");
     }
 
     public class GH_VectorFamilyDiscretizer : GH_Component

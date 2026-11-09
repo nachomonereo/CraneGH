@@ -3010,21 +3010,67 @@ namespace CraneGH.Core
                     }
                 }
 
-                // B. Robot Kinematic Wrist Singularity & Self-Collision Energy
-                double singDot = zAxis * wristSingularityAxis;
-                if (singDot > 0.65)
+                // B. Embedded Analytical 6-Axis Robot Inverse Kinematics (IK) Singularity & Self-Collision Check
+                //    Models a standard 6-DOF spherical-wrist robot arm (Shoulder L1, Upper Arm L2, Forearm L3)
+                Point3d wristCenter = tcp + zAxis * spindleLen;
+                Point3d shoulderJoint = robotBaseColumn + new Vector3d(0.0, 0.0, 0.35 * diag);
+                double L2 = 0.72 * diag; // Upper arm length
+                double L3 = 0.68 * diag; // Forearm length
+
+                Vector3d sw = wristCenter - shoulderJoint;
+                double rHoriz = Math.Sqrt(sw.X * sw.X + sw.Y * sw.Y);
+                double dReach = sw.Length;
+
+                // 1) Overhead Waist Singularity (J1 undefined when wrist passes directly over shoulder axis rHoriz -> 0)
+                if (rHoriz < 1.2 * rSpindle)
                 {
-                    double sPen = (singDot - 0.65) / 0.35;
-                    energy += 8.5 * sPen * sPen;
+                    double ohPen = (1.2 * rSpindle - rHoriz) / Math.Max(1e-5, rSpindle);
+                    energy += 9.0 * ohPen * ohPen;
                 }
-                // Prevent upside-down tool flips (zAxis.Z < -0.25)
+
+                // 2) Elbow Reach / Workspace Boundary Singularity (Law of Cosines cos(theta3) -> +-1)
+                double maxReach = 0.96 * (L2 + L3);
+                double minReach = 1.15 * Math.Abs(L2 - L3);
+                if (dReach > maxReach)
+                {
+                    double rPen = (dReach - maxReach) / Math.Max(1e-5, rSpindle);
+                    energy += 15.0 * rPen * rPen;
+                }
+                else if (dReach < minReach)
+                {
+                    double rPen = (minReach - dReach) / Math.Max(1e-5, rSpindle);
+                    energy += 12.0 * rPen * rPen;
+                }
+
+                // Solve analytical 2-Link Elbow Position & Forearm Axis a_forearm
+                double cosAlpha = Math.Max(-0.999, Math.Min(0.999, (L2 * L2 + dReach * dReach - L3 * L3) / Math.Max(1e-6, 2.0 * L2 * dReach)));
+                double sinAlpha = Math.Sqrt(Math.Max(0.0, 1.0 - cosAlpha * cosAlpha));
+                Vector3d swDir = dReach > 1e-6 ? (sw / dReach) : Vector3d.YAxis;
+                Vector3d armUpPlane = Vector3d.CrossProduct(Vector3d.CrossProduct(swDir, Vector3d.ZAxis), swDir);
+                if (armUpPlane.Length < 1e-8) armUpPlane = Vector3d.ZAxis;
+                armUpPlane.Unitize();
+
+                Point3d elbowJoint = shoulderJoint + L2 * (cosAlpha * swDir + sinAlpha * armUpPlane);
+                Vector3d forearmAxis = wristCenter - elbowJoint;
+                if (forearmAxis.Length > 1e-8) forearmAxis.Unitize();
+                else forearmAxis = wristSingularityAxis;
+
+                // 3) Exact Wrist Singularity (J5 -> 0 when Spindle Axis zAxis aligns with Forearm Axis!)
+                //    Note: Spindle Z points from TCP to Wrist (+zAxis), while forearm points from Elbow to Wrist (+forearmAxis)
+                double cosTheta5 = Math.Abs(zAxis * forearmAxis);
+                if (cosTheta5 > 0.82) // within ~34 degrees of collinear J4-J6 wrist lock
+                {
+                    double wPen = (cosTheta5 - 0.82) / 0.18;
+                    energy += 14.0 * wPen * wPen;
+                }
+
+                // 4) Prevent upside-down tool flips (zAxis.Z < -0.15) & Base Self-Collision
                 if (zAxis.Z < -0.15)
                 {
                     double flipPen = (-0.15 - zAxis.Z);
                     energy += 14.0 * flipPen * flipPen;
                 }
-                // Self-collision with robot base column
-                double distBase = (tcp + zAxis * spindleLen).DistanceTo(robotBaseColumn);
+                double distBase = wristCenter.DistanceTo(robotBaseColumn);
                 if (distBase < 2.2 * rSpindle)
                 {
                     double bPen = (2.2 * rSpindle - distBase) / Math.Max(1e-5, rSpindle);
@@ -3407,6 +3453,843 @@ namespace CraneGH.Core
             spindleShellPreviewMesh.Normals.ComputeNormals();
 
             return new Polyline(optOrigins);
+        }
+
+        // =========================================================================================
+        // 28. MULTI-MODE VECTOR, 4-ROSY CROSS, GEODESIC GRADIENT & COVARIANT VECTOR GRADIENT VIEWER
+        //     Computes Discrete Divergence (div V), Rotor/Curl ((curl V).N), Covariant Vector
+        //     Gradient (nabla ||V|| + (V.nabla)V), and 4-RoSy Cross Glyphs.
+        // =========================================================================================
+        public static void ComputeVectorFieldGradientsAndGlyphs(
+            DdgMesh mesh,
+            IList<Vector3d> optionalVectors,
+            IList<double> optionalScalars,
+            double scaleMultiplier,
+            int displayMode,
+            out List<Line> primaryLines,
+            out List<Line> crossOrOrthoLines,
+            out Vector3d[] covariantVectorGradient,
+            out double[] divergenceField,
+            out double[] curlField,
+            out Mesh coloredAnalysisMesh,
+            out List<Color> primaryColors)
+        {
+            int nV = mesh.VertexCount;
+            primaryLines = new List<Line>(nV);
+            crossOrOrthoLines = new List<Line>(nV);
+            covariantVectorGradient = new Vector3d[nV];
+            divergenceField = new double[nV];
+            curlField = new double[nV];
+            primaryColors = new List<Color>(nV);
+
+            // 1. Obtain vertex tangent vector field V (from Vectors, Scalar Geodesic Gradient, or Principal Curvature)
+            Vector3d[] vField;
+            double[] magField = new double[nV];
+
+            if (optionalVectors != null && optionalVectors.Count > 0)
+            {
+                vField = mesh.MapVectorInputToVertices(optionalVectors);
+            }
+            else if (optionalScalars != null && optionalScalars.Count > 0)
+            {
+                double[] u = mesh.MapScalarInputToVertices(optionalScalars);
+                mesh.ComputeGradient(u, out _, out vField);
+            }
+            else
+            {
+                vField = ComputeOptimalDirectionField(mesh, 4, 0.65, out _, out _);
+            }
+
+            // Project onto tangent plane and compute magnitudes
+            double maxMag = 1e-12;
+            for (int i = 0; i < nV; i++)
+            {
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d v = vField[i] - (vField[i] * n) * n;
+                double len = v.Length;
+                magField[i] = len;
+                if (len > maxMag) maxMag = len;
+                vField[i] = v;
+            }
+
+            // 2. Compute Discrete Divergence (div V), Curl ((nabla x V) . N), and Covariant Vector Gradient
+            //    First compute face vectors and face gradient of ||V||
+            var faceVecs = new Vector3d[mesh.FaceCount];
+            for (int f = 0; f < mesh.FaceCount; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                Vector3d vf = (vField[fv[0]] + vField[fv[1]] + vField[fv[2]]) / 3.0;
+                Vector3d nf = mesh.FaceNormals[f];
+                vf -= (vf * nf) * nf;
+                faceVecs[f] = vf;
+            }
+
+            divergenceField = mesh.ComputeIntegratedDivergence(faceVecs);
+
+            // Compute discrete Curl by evaluating divergence of 90-degree rotated face field (N x V)
+            var rotatedFaceVecs = new Vector3d[mesh.FaceCount];
+            for (int f = 0; f < mesh.FaceCount; f++)
+            {
+                rotatedFaceVecs[f] = Vector3d.CrossProduct(mesh.FaceNormals[f], faceVecs[f]);
+            }
+            curlField = mesh.ComputeIntegratedDivergence(rotatedFaceVecs);
+
+            // Normalize Div and Curl by dual area for scale-invariant inspection
+            for (int i = 0; i < nV; i++)
+            {
+                double area = Math.Max(1e-8, mesh.DualAreas[i]);
+                divergenceField[i] /= area;
+                curlField[i] /= area;
+            }
+
+            // Compute Covariant Vector Gradient: combines gradient of magnitude nabla(||V||) + spatial turning rate (V . nabla)V
+            mesh.ComputeGradient(magField, out _, out Vector3d[] gradMag);
+            for (int i = 0; i < nV; i++)
+            {
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d turnVec = Vector3d.Zero;
+                Point3d pi = mesh.Positions[i];
+                Vector3d vi = vField[i];
+                var outHes = mesh.VertexOutgoingHalfEdges[i];
+
+                foreach (int heIdx in outHes)
+                {
+                    int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                    Vector3d edge = mesh.Positions[nb] - pi;
+                    double eLen2 = edge.SquareLength;
+                    if (eLen2 < 1e-12) continue;
+                    // Parallel transport neighbor vector v_nb to tangent plane at i
+                    Vector3d vNb = vField[nb] - (vField[nb] * n) * n;
+                    Vector3d dV = vNb - vi;
+                    turnVec += (dV.Length / Math.Sqrt(eLen2)) * edge;
+                }
+                if (outHes.Count > 0)
+                    turnVec /= outHes.Count;
+
+                Vector3d covGrad = gradMag[i] + 0.5 * (turnVec - (turnVec * n) * n);
+                covariantVectorGradient[i] = covGrad;
+            }
+
+            // 3. Choose scalar field to color the analysis mesh based on displayMode:
+            //    0 = Vector Arrows (colored by Magnitude ||V||)
+            //    1 = 4-RoSy Symmetric Crosses (colored by Curl / Anisotropy)
+            //    2 = Geodesic Gradient & Wavefront Ticks (colored by Gradient Slope ||nabla u||)
+            //    3 = Covariant Vector Gradient & Divergence-Curl Jacobian (colored by ||nabla V||)
+            double[] colorScalars = new double[nV];
+            double minS = double.MaxValue, maxS = double.MinValue;
+            for (int i = 0; i < nV; i++)
+            {
+                double val = displayMode == 1 ? Math.Abs(curlField[i])
+                           : displayMode == 3 ? covariantVectorGradient[i].Length
+                           : magField[i];
+                colorScalars[i] = val;
+                if (val < minS) minS = val;
+                if (val > maxS) maxS = val;
+            }
+            double spanS = Math.Max(1e-12, maxS - minS);
+            coloredAnalysisMesh = ColorMeshByPalette(mesh.RhinoMesh, colorScalars, displayMode == 3 ? 3 : 2);
+
+            // 4. Generate 3D Glyph Lines (Arrows, 4-RoSy Crosses, Wavefront Ticks, or Covariant Gradient Vectors)
+            double baseLen = Math.Max(1e-5, scaleMultiplier * mesh.MeanEdgeLength);
+
+            for (int i = 0; i < nV; i++)
+            {
+                Point3d p = mesh.Positions[i];
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d dir = vField[i];
+                if (dir.Length < 1e-12) continue;
+                dir.Unitize();
+
+                Vector3d ortho = Vector3d.CrossProduct(n, dir);
+                if (ortho.Length > 1e-12) ortho.Unitize();
+
+                double tCol = (colorScalars[i] - minS) / spanS;
+                Color cGlyph = EvaluateScientificColor(tCol, displayMode == 3 ? 3 : 2);
+
+                if (displayMode == 1)
+                {
+                    // Mode 1: 4-RoSy Symmetric Crosses (U and V orthogonal axes centered at vertex)
+                    double half = 0.55 * baseLen;
+                    primaryLines.Add(new Line(p - half * dir, p + half * dir));
+                    crossOrOrthoLines.Add(new Line(p - half * ortho, p + half * ortho));
+                    primaryColors.Add(cGlyph);
+                }
+                else if (displayMode == 2)
+                {
+                    // Mode 2: Geodesic Gradient Arrow + Orthogonal Iso-Wavefront Tick
+                    primaryLines.Add(new Line(p, p + baseLen * dir));
+                    double tickHalf = 0.38 * baseLen;
+                    crossOrOrthoLines.Add(new Line(p - tickHalf * ortho, p + tickHalf * ortho));
+                    primaryColors.Add(cGlyph);
+                }
+                else if (displayMode == 3)
+                {
+                    // Mode 3: Vector Gradient (Covariant Derivative Arrow + Primary Vector Cross)
+                    Vector3d vg = covariantVectorGradient[i];
+                    if (vg.Length > 1e-12) vg.Unitize();
+                    else vg = ortho;
+                    primaryLines.Add(new Line(p, p + baseLen * vg));
+                    double half = 0.42 * baseLen;
+                    crossOrOrthoLines.Add(new Line(p - half * dir, p + half * dir));
+                    primaryColors.Add(cGlyph);
+                }
+                else
+                {
+                    // Mode 0 (Default): Directed Tangent Vector Arrows + Orthogonal Cross Output
+                    double scaleByMag = (0.45 + 0.55 * (magField[i] / maxMag)) * baseLen;
+                    primaryLines.Add(new Line(p, p + scaleByMag * dir));
+                    double half = 0.35 * baseLen;
+                    crossOrOrthoLines.Add(new Line(p - half * ortho, p + half * ortho));
+                    primaryColors.Add(cGlyph);
+                }
+            }
+        }
+
+        // =========================================================================================
+        // 29. SCALAR-WEIGHTED + VECTOR-GUIDED ANISOTROPIC FLOW & GEODESIC TOOLPATH ("GuidedFlow")
+        //     Inspired by Variable-Coefficient Drift-Diffusion (Sawhney et al. / Crane),
+        //     Anisotropic Geodesics in Heat, and Variational Surface Cutting.
+        //     - Scalar Relevance W in [0, 1]: 0 = Forbidden / Avoid, 1 = High-Priority Highway / Attract
+        //     - Vector Field V: Desired travel direction on the mesh
+        //     - Combines V with the Relevance Gradient (+nabla W) so trajectories are actively pushed
+        //       out of 0-zones into 1-zones while traveling in the direction of V!
+        // =========================================================================================
+        public static List<Polyline> ComputeScalarWeightedVectorGuidedToolpaths(
+            DdgMesh mesh,
+            IList<Vector3d> optionalVectorField,
+            IList<double> rawRelevanceScalars,
+            IList<Point3d> optionalSeedOrWaypoints,
+            out Polyline anisotropicABGeodesic,
+            out Vector3d[] guidedDriftField,
+            out List<Plane> fabricationPlanes,
+            out Mesh relevanceColoredMesh,
+            out double[] normalizedRelevance)
+        {
+            int nV = mesh.VertexCount;
+            anisotropicABGeodesic = new Polyline();
+            guidedDriftField = new Vector3d[nV];
+            fabricationPlanes = new List<Plane>();
+            normalizedRelevance = new double[nV];
+
+            // 1. Normalize Scalar Relevance Field W to [0, 1] (0 = do not pass, 1 = high importance highway)
+            if (rawRelevanceScalars != null && rawRelevanceScalars.Count > 0)
+            {
+                double[] rawW = mesh.MapScalarInputToVertices(rawRelevanceScalars);
+                double minW = double.MaxValue, maxW = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (rawW[i] < minW) minW = rawW[i];
+                    if (rawW[i] > maxW) maxW = rawW[i];
+                }
+                double spanW = maxW - minW;
+                for (int i = 0; i < nV; i++)
+                {
+                    normalizedRelevance[i] = spanW > 1e-12
+                        ? Math.Max(0.0, Math.Min(1.0, (rawW[i] - minW) / spanW))
+                        : 1.0;
+                }
+            }
+            else
+            {
+                // Default if no scalar provided: use normalized Mean Curvature magnitude as relevance
+                double[] hCurv = mesh.MeanCurvature;
+                double minH = double.MaxValue, maxH = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    double v = Math.Abs(hCurv[i]);
+                    if (v < minH) minH = v;
+                    if (v > maxH) maxH = v;
+                }
+                double spanH = Math.Max(1e-12, maxH - minH);
+                for (int i = 0; i < nV; i++)
+                    normalizedRelevance[i] = (Math.Abs(hCurv[i]) - minH) / spanH;
+            }
+
+            // Smooth relevance slightly to get a clean, long-range Attractive Gradient (+nabla W) that pulls paths from 0 -> 1
+            double[] smoothW = SmoothScalarField(mesh, normalizedRelevance, 2.0, 0.0, out _, out _);
+            mesh.ComputeGradient(smoothW, out _, out Vector3d[] gradW);
+
+            // 2. Obtain base guidance Vector Field V
+            Vector3d[] baseV;
+            if (optionalVectorField != null && optionalVectorField.Count > 0)
+            {
+                baseV = mesh.MapVectorInputToVertices(optionalVectorField);
+            }
+            else
+            {
+                baseV = ComputeOptimalDirectionField(mesh, 1, 0.65, out _, out _);
+            }
+
+            // 3. Construct the Relevance-Guided Drift-Advection Vector Field:
+            //    U(x) = W(x)^0.65 * V_unit(x) + lambda * (1.15 - 0.65 * W(x)) * gradW_unit(x)
+            //    - In low-W zones (W -> 0), the gradient +nabla W strongly dominates and pushes the trajectory UPHILL toward W = 1!
+            //    - In high-W zones (W -> 1), the vector field V dominates so the trajectory surfs cleanly along V inside the 1-corridor!
+            for (int i = 0; i < nV; i++)
+            {
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d v = baseV[i] - (baseV[i] * n) * n;
+                if (v.Length > 1e-12) v.Unitize();
+
+                Vector3d gw = gradW[i] - (gradW[i] * n) * n;
+                if (gw.Length > 1e-12) gw.Unitize();
+
+                double w = normalizedRelevance[i];
+                // Ensure the vector field V doesn't point steeply downhill into a 0-zone if we can flip or deflect it
+                double dotDownhill = v * gw;
+                Vector3d vDeflected = v;
+                if (w < 0.35 && dotDownhill < -0.1)
+                {
+                    // Project out the component pointing into the forbidden 0-zone
+                    vDeflected = v - (dotDownhill * gw);
+                    if (vDeflected.Length > 1e-12) vDeflected.Unitize();
+                }
+
+                double wVecWeight = 0.25 + 0.75 * Math.Pow(w, 0.65);
+                double wGradPush = 0.62 * (1.15 - 0.75 * w);
+
+                Vector3d combined = wVecWeight * vDeflected + wGradPush * gw;
+                combined -= (combined * n) * n;
+                if (combined.Length > 1e-12) combined.Unitize();
+                else combined = v;
+
+                // Scale magnitude by (0.15 + 0.85 * w) so visual arrows clearly show relevance strength
+                guidedDriftField[i] = combined * (0.20 + 0.80 * w);
+            }
+
+            // Color mesh with Turbo / Heat palette: 0 (Deep Blue = avoid) -> 1 (Gold/Red = high priority highway)
+            relevanceColoredMesh = ColorMeshByPalette(mesh.RhinoMesh, normalizedRelevance, 3);
+
+            // 4. Trace Relevance-Guided Vector Toolpaths (Streamlines pushed toward W=1 and repelled from W=0)
+            var seedPoints = new List<Point3d>();
+            if (optionalSeedOrWaypoints != null && optionalSeedOrWaypoints.Count > 0)
+            {
+                seedPoints.AddRange(optionalSeedOrWaypoints);
+            }
+            else
+            {
+                // Auto-seed in high-relevance (W >= 0.45) vertices well-spaced across the mesh
+                int targetSeeds = Math.Min(18, Math.Max(4, nV / 45));
+                var chosen = new List<int>();
+                double minSeedDist = mesh.MeanEdgeLength * 3.0;
+
+                // Sort vertices by descending relevance W
+                int[] order = new int[nV];
+                for (int i = 0; i < nV; i++) order[i] = i;
+                double[] relCopy = normalizedRelevance;
+                Array.Sort(order, (a, b) => relCopy[b].CompareTo(relCopy[a]));
+
+                for (int idx = 0; idx < nV && chosen.Count < targetSeeds; idx++)
+                {
+                    int v = order[idx];
+                    if (normalizedRelevance[v] < 0.20) break;
+                    bool farEnough = true;
+                    foreach (int c in chosen)
+                    {
+                        if (mesh.Positions[v].DistanceTo(mesh.Positions[c]) < minSeedDist)
+                        {
+                            farEnough = false;
+                            break;
+                        }
+                    }
+                    if (farEnough)
+                    {
+                        chosen.Add(v);
+                        seedPoints.Add(mesh.Positions[v]);
+                    }
+                }
+            }
+
+            var flowPaths = new List<Polyline>();
+            double stepSize = 0.45 * mesh.MeanEdgeLength;
+            int maxSteps = Math.Min(260, Math.Max(60, (int)(mesh.RhinoMesh.GetBoundingBox(false).Diagonal.Length / Math.Max(1e-5, stepSize) * 1.4)));
+
+            foreach (Point3d seed in seedPoints)
+            {
+                var pts = new List<Point3d>();
+                MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(seed, 0.0);
+                if (mp == null) continue;
+
+                Point3d curr = mp.Point;
+                pts.Add(curr);
+                Vector3d prevDir = Vector3d.Zero;
+
+                for (int step = 0; step < maxSteps; step++)
+                {
+                    MeshFace mf = mesh.RhinoMesh.Faces[mp.FaceIndex];
+                    double wCurr = mp.T[0] * normalizedRelevance[mf.A]
+                                 + mp.T[1] * normalizedRelevance[mf.B]
+                                 + mp.T[2] * normalizedRelevance[mf.C];
+
+                    // Stop if trajectory hits a hard forbidden 0-barrier (after leaving initial seed)
+                    if (step > 4 && wCurr < 0.04) break;
+
+                    Vector3d dir = mp.T[0] * guidedDriftField[mf.A]
+                                 + mp.T[1] * guidedDriftField[mf.B]
+                                 + mp.T[2] * guidedDriftField[mf.C];
+
+                    if (dir.Length < 1e-10) break;
+                    dir.Unitize();
+
+                    // Prevent sudden 180-degree reversals
+                    if (prevDir.Length > 1e-10 && (dir * prevDir) < -0.5) break;
+                    prevDir = dir;
+
+                    Point3d nextCand = curr + stepSize * dir;
+                    MeshPoint nextMp = mesh.RhinoMesh.ClosestMeshPoint(nextCand, 0.0);
+                    if (nextMp == null) break;
+
+                    if (nextMp.Point.DistanceTo(curr) < 0.05 * stepSize) break;
+                    curr = nextMp.Point;
+                    mp = nextMp;
+                    pts.Add(curr);
+                }
+
+                if (pts.Count >= 2)
+                    flowPaths.Add(new Polyline(pts));
+            }
+
+            // 5. Compute the Optimal Anisotropic Scalar+Vector Geodesic Toolpath from A to B (across waypoints in P, or between top 2 seeds)
+            //    Uses a Randers / Weighted Riemannian edge cost:
+            //    Cost(i -> j) = ||p_j - p_i|| / (0.04 + W_avg^2.2) * (1.0 - 0.58 * cos(theta_V))
+            var waypoints = (optionalSeedOrWaypoints != null && optionalSeedOrWaypoints.Count >= 2)
+                ? optionalSeedOrWaypoints
+                : seedPoints;
+
+            if (waypoints.Count >= 2)
+            {
+                var fullAB = new List<Point3d>();
+                for (int wp = 0; wp < waypoints.Count - 1; wp++)
+                {
+                    int vStart = mesh.FindClosestVertex(waypoints[wp]);
+                    int vEnd = mesh.FindClosestVertex(waypoints[wp + 1]);
+                    if (vStart == vEnd) continue;
+
+                    double[] dist = new double[nV];
+                    int[] parent = new int[nV];
+                    bool[] visited = new bool[nV];
+                    for (int i = 0; i < nV; i++)
+                    {
+                        dist[i] = double.MaxValue;
+                        parent[i] = -1;
+                    }
+                    dist[vStart] = 0.0;
+
+                    var pq = new SortedSet<(double cost, int v)>();
+                    pq.Add((0.0, vStart));
+
+                    while (pq.Count > 0)
+                    {
+                        var top = pq.Min;
+                        pq.Remove(top);
+                        int u = top.v;
+                        if (visited[u]) continue;
+                        visited[u] = true;
+                        if (u == vEnd) break;
+
+                        Point3d pu = mesh.Positions[u];
+                        Vector3d vu = guidedDriftField[u];
+                        if (vu.Length > 1e-12) vu.Unitize();
+
+                        foreach (int heIdx in mesh.VertexOutgoingHalfEdges[u])
+                        {
+                            int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                            if (visited[nb]) continue;
+                            Vector3d edge = mesh.Positions[nb] - pu;
+                            double eLen = edge.Length;
+                            if (eLen < 1e-12) continue;
+                            Vector3d eDir = edge / eLen;
+
+                            // 1) Scalar Relevance Weight: W -> 1 is 25x cheaper ("highway"), W -> 0 is 25x more expensive ("barrier")
+                            double wAvg = 0.5 * (normalizedRelevance[u] + normalizedRelevance[nb]);
+                            double scalarPenalty = 1.0 / (0.04 + 2.4 * wAvg * wAvg);
+
+                            // 2) Vector Field Alignment Drift: moving WITH the vector field V is strongly favored
+                            double alignCos = vu * eDir; // in [-1, 1]
+                            double vectorFactor = 1.0 - 0.58 * alignCos; // 0.42 when aligned (+V), 1.58 when opposing (-V)
+
+                            double stepCost = eLen * scalarPenalty * vectorFactor;
+                            double newCost = dist[u] + stepCost;
+                            if (newCost < dist[nb])
+                            {
+                                dist[nb] = newCost;
+                                parent[nb] = u;
+                                pq.Add((newCost, nb));
+                            }
+                        }
+                    }
+
+                    // Reconstruct and smooth segment on the mesh
+                    var segVerts = new List<int>();
+                    int currV = vEnd;
+                    while (currV != -1)
+                    {
+                        segVerts.Add(currV);
+                        if (currV == vStart) break;
+                        currV = parent[currV];
+                    }
+                    segVerts.Reverse();
+
+                    if (segVerts.Count >= 2)
+                    {
+                        var segPts = new Point3d[segVerts.Count];
+                        for (int k = 0; k < segVerts.Count; k++)
+                            segPts[k] = mesh.Positions[segVerts[k]];
+
+                        // Intrinsic laplacian smoothing projected onto mesh while biasing toward higher W
+                        for (int pass = 0; pass < 6; pass++)
+                        {
+                            for (int k = 1; k < segPts.Length - 1; k++)
+                            {
+                                Point3d avg = 0.25 * segPts[k - 1] + 0.50 * segPts[k] + 0.25 * segPts[k + 1];
+                                MeshPoint mpS = mesh.RhinoMesh.ClosestMeshPoint(avg, 0.0);
+                                if (mpS != null) segPts[k] = mpS.Point;
+                            }
+                        }
+
+                        for (int k = (wp == 0 ? 0 : 1); k < segPts.Length; k++)
+                            fullAB.Add(segPts[k]);
+                    }
+                }
+
+                if (fullAB.Count >= 2)
+                    anisotropicABGeodesic = new Polyline(fullAB);
+            }
+
+            // 6. Generate 5/6-Axis Fabrication Planes along the primary path(s)
+            IList<Polyline> targetPathsForPlanes = anisotropicABGeodesic.Count >= 2
+                ? new List<Polyline> { anisotropicABGeodesic }
+                : flowPaths;
+
+            foreach (Polyline pl in targetPathsForPlanes)
+            {
+                if (pl == null || pl.Count < 2) continue;
+                for (int i = 0; i < pl.Count; i++)
+                {
+                    Point3d p = pl[i];
+                    Vector3d tang = (i < pl.Count - 1) ? (pl[i + 1] - p) : (p - pl[i - 1]);
+                    if (tang.Length < 1e-10) tang = Vector3d.XAxis;
+                    tang.Unitize();
+
+                    int vNear = mesh.FindClosestVertex(p);
+                    Vector3d nrm = mesh.VertexNormals[vNear];
+                    if (nrm.Length < 1e-10) nrm = Vector3d.ZAxis;
+                    nrm.Unitize();
+
+                    Vector3d yAx = Vector3d.CrossProduct(nrm, tang);
+                    if (yAx.Length < 1e-10)
+                        yAx = Vector3d.CrossProduct(nrm, Math.Abs(nrm.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                    yAx.Unitize();
+                    Vector3d xAx = Vector3d.CrossProduct(yAx, nrm);
+                    xAx.Unitize();
+
+                    fabricationPlanes.Add(new Plane(p, xAx, yAx));
+                }
+            }
+
+            return flowPaths;
+        }
+
+        // =========================================================================================
+        // 30. CURVATURE REGIME, INFLECTION (H = 0) & MAXIMA/MINIMA WATERSHED MESH SEGMENTATION
+        //     Segments a mesh at user-controlled Curvature Loci:
+        //     - Mode 0: Cut at Inflection / Signed Threshold (H = T, default 0.0 -> Convex vs. Concave Pieces)
+        //     - Mode 1: Cut Along Curvature Maxima (Ridges / Crestas -> Leaves Concave Valley Basins)
+        //     - Mode 2: Cut Along Curvature Minima (Valleys / Surcos -> Leaves Convex Dome Lobes)
+        //     - Mode 3: 3-Regime Band Split: Concave (H < -|T|) + Flat (-|T|..+|T|) + Convex (H > +|T|)
+        // =========================================================================================
+        public static List<Mesh> ComputeCurvatureRegimeSegmentation(
+            DdgMesh mesh,
+            int cutMode,
+            double curvatureThreshold,
+            double smoothness,
+            out List<Mesh> convexPieces,
+            out List<Mesh> concavePieces,
+            out List<Polyline> subdivisionCurves,
+            out double[] normalizedSignedCurvature,
+            out Mesh coloredCurvatureMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            convexPieces = new List<Mesh>();
+            concavePieces = new List<Mesh>();
+            subdivisionCurves = new List<Polyline>();
+            normalizedSignedCurvature = new double[nV];
+            var allPieces = new List<Mesh>();
+
+            // 1. Compute Signed Mean Curvature H at every vertex:
+            //    Positive (+H) = Convex (surface bends away from outward normal)
+            //    Negative (-H) = Concave (surface bends toward outward normal)
+            //    Zero (0)      = Inflection / Flat / Saddle transition
+            double[] rawH = new double[nV];
+            for (int i = 0; i < nV; i++)
+            {
+                Point3d pi = mesh.Positions[i];
+                Vector3d ni = mesh.VertexNormals[i];
+                var outHes = mesh.VertexOutgoingHalfEdges[i];
+                if (outHes.Count == 0) continue;
+
+                Point3d bary = Point3d.Origin;
+                foreach (int heIdx in outHes)
+                    bary += mesh.Positions[mesh.HalfEdges[heIdx].TargetVertex];
+                bary /= outHes.Count;
+
+                // Vector from neighbor centroid to vertex pi dotted with outward normal ni:
+                // > 0 on convex peaks/ridges, < 0 in concave valleys/bowls
+                Vector3d diff = pi - bary;
+                rawH[i] = (diff * ni) / Math.Max(1e-6, mesh.MeanEdgeLength);
+            }
+
+            // Smooth signed curvature via Cotan-Laplace diffusion so cut contours are clean fabrication seams
+            double[] smoothH = SmoothScalarField(mesh, rawH, Math.Max(0.2, smoothness), 0.0, out _, out _);
+
+            // Normalize symmetrically by robust 96th-percentile magnitude so 0.0 is strictly preserved as H = 0!
+            double[] absVals = new double[nV];
+            for (int i = 0; i < nV; i++) absVals[i] = Math.Abs(smoothH[i]);
+            Array.Sort(absVals);
+            double scaleH = Math.Max(1e-8, absVals[(int)Math.Min(nV - 1, Math.Floor(nV * 0.96))]);
+
+            for (int i = 0; i < nV; i++)
+            {
+                normalizedSignedCurvature[i] = Math.Max(-1.0, Math.Min(1.0, smoothH[i] / scaleH));
+            }
+
+            // Color inspection mesh with CoolWarm Diverging Palette (Blue = Concave -1, White = Zero Inflection 0, Red = Convex +1)
+            coloredCurvatureMesh = new Mesh();
+            coloredCurvatureMesh.CopyFrom(mesh.RhinoMesh);
+            coloredCurvatureMesh.VertexColors.Clear();
+            for (int i = 0; i < nV; i++)
+            {
+                double t01 = 0.5 * (normalizedSignedCurvature[i] + 1.0); // maps [-1, +1] -> [0, 1]
+                coloredCurvatureMesh.VertexColors.Add(EvaluateScientificColor(t01, 1));
+            }
+
+            double thresh = Math.Max(-0.95, Math.Min(0.95, curvatureThreshold));
+
+            if (cutMode == 0 || cutMode == 3)
+            {
+                // MODE 0: Exact Sub-Triangle Cut at H_norm = Threshold (default 0.0 -> Concave vs. Convex)
+                // MODE 3: 3-Regime Band Cut at -|T| and +|T| (Concave, Flat, Convex)
+                var cutLevels = new List<double>();
+                if (cutMode == 3)
+                {
+                    double bandT = Math.Max(0.08, Math.Abs(thresh) > 1e-4 ? Math.Abs(thresh) : 0.22);
+                    cutLevels.Add(-bandT);
+                    cutLevels.Add(+bandT);
+                }
+                else
+                {
+                    cutLevels.Add(thresh);
+                }
+
+                subdivisionCurves = ComputeExactIsoCutAndBands(
+                    mesh,
+                    normalizedSignedCurvature,
+                    cutLevels,
+                    false, // use exact signed threshold in [-1, +1]
+                    out _,
+                    out _,
+                    out List<Mesh> bands,
+                    out _,
+                    out _);
+
+                // Split each band into connected components and classify each piece as Convex or Concave
+                var distinctColors = GenerateDistinctPalette(16);
+                int colorCounter = 0;
+
+                for (int b = 0; b < bands.Count; b++)
+                {
+                    Mesh bandMesh = bands[b];
+                    if (bandMesh == null || bandMesh.Faces.Count == 0) continue;
+
+                    Mesh[] comps = bandMesh.SplitDisjointPieces();
+                    if (comps == null || comps.Length == 0) comps = new[] { bandMesh };
+
+                    foreach (Mesh comp in comps)
+                    {
+                        if (comp == null || comp.Faces.Count == 0) continue;
+                        comp.Normals.ComputeNormals();
+
+                        // Evaluate mean signed curvature of this piece
+                        double sumCurv = 0.0;
+                        int sampleStep = Math.Max(1, comp.Vertices.Count / 40);
+                        int samples = 0;
+                        for (int vi = 0; vi < comp.Vertices.Count; vi += sampleStep)
+                        {
+                            int nearV = mesh.FindClosestVertex(comp.Vertices[vi]);
+                            sumCurv += normalizedSignedCurvature[nearV];
+                            samples++;
+                        }
+                        double avgCurv = samples > 0 ? sumCurv / samples : 0.0;
+
+                        Color pieceCol = distinctColors[colorCounter % distinctColors.Length];
+                        colorCounter++;
+                        comp.VertexColors.Clear();
+                        for (int vi = 0; vi < comp.Vertices.Count; vi++)
+                            comp.VertexColors.Add(pieceCol);
+
+                        allPieces.Add(comp);
+                        if (avgCurv >= thresh)
+                            convexPieces.Add(comp);
+                        else
+                            concavePieces.Add(comp);
+                    }
+                }
+            }
+            else
+            {
+                // MODE 1: Cut Along Curvature Maxima (Ridges / Crestas) -> Leaves Concave Valley Basins
+                // MODE 2: Cut Along Curvature Minima (Valleys / Surcos) -> Leaves Convex Dome Lobes
+                bool cutAtMaxima = (cutMode == 1);
+
+                // In Mode 1 (cut at Maxima), basin seeds are local MINIMA of curvature (valleys), and ridges act as high barriers!
+                // In Mode 2 (cut at Minima), basin seeds are local MAXIMA of curvature (convex domes), and valleys act as barriers!
+                double[] fieldForSeeds = new double[nV];
+                for (int i = 0; i < nV; i++)
+                {
+                    fieldForSeeds[i] = cutAtMaxima ? -normalizedSignedCurvature[i] : normalizedSignedCurvature[i];
+                }
+
+                // Find well-spaced prominent local peaks of fieldForSeeds
+                var candidatePeaks = new List<int>();
+                for (int i = 0; i < nV; i++)
+                {
+                    bool isLocalPeak = true;
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[i])
+                    {
+                        int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                        if (fieldForSeeds[nb] > fieldForSeeds[i] + 1e-6)
+                        {
+                            isLocalPeak = false;
+                            break;
+                        }
+                    }
+                    if (isLocalPeak && fieldForSeeds[i] >= thresh)
+                        candidatePeaks.Add(i);
+                }
+
+                candidatePeaks.Sort((a, b) => fieldForSeeds[b].CompareTo(fieldForSeeds[a]));
+
+                double minPeakSpacing = mesh.MeanEdgeLength * Math.Max(2.5, 1.5 + smoothness);
+                var seeds = new List<int>();
+                foreach (int pk in candidatePeaks)
+                {
+                    bool farEnough = true;
+                    foreach (int s in seeds)
+                    {
+                        if (mesh.Positions[pk].DistanceTo(mesh.Positions[s]) < minPeakSpacing)
+                        {
+                            farEnough = false;
+                            break;
+                        }
+                    }
+                    if (farEnough)
+                    {
+                        seeds.Add(pk);
+                        if (seeds.Count >= 18) break;
+                    }
+                }
+
+                // Ensure at least 2 seeds if mesh is smooth
+                if (seeds.Count < 2)
+                {
+                    int minIdx = 0, maxIdx = 0;
+                    for (int i = 1; i < nV; i++)
+                    {
+                        if (fieldForSeeds[i] > fieldForSeeds[maxIdx]) maxIdx = i;
+                        if (fieldForSeeds[i] < fieldForSeeds[minIdx]) minIdx = i;
+                    }
+                    seeds.Clear();
+                    seeds.Add(maxIdx);
+                    if (minIdx != maxIdx) seeds.Add(minIdx);
+                }
+
+                // Multi-Source Geodesic Watershed where crossing the target Curvature Extremum (Maxima in Mode 1, Minima in Mode 2)
+                // carries a steep barrier weight so region boundaries lock directly onto the Maxima Ridges or Minima Valleys!
+                int[] vLabel = new int[nV];
+                double[] vDist = new double[nV];
+                for (int i = 0; i < nV; i++)
+                {
+                    vLabel[i] = -1;
+                    vDist[i] = double.MaxValue;
+                }
+
+                var pq = new SortedSet<(double cost, int v)>();
+                for (int k = 0; k < seeds.Count; k++)
+                {
+                    int sv = seeds[k];
+                    vLabel[sv] = k;
+                    vDist[sv] = 0.0;
+                    pq.Add((0.0, sv));
+                }
+
+                while (pq.Count > 0)
+                {
+                    var top = pq.Min;
+                    pq.Remove(top);
+                    int u = top.v;
+
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[u])
+                    {
+                        int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                        double eLen = mesh.Positions[u].DistanceTo(mesh.Positions[nb]);
+                        // Barrier is high where curvature approaches the cut locus (Maxima +1 in Mode 1, Minima -1 in Mode 2)
+                        double locusVal = cutAtMaxima
+                            ? 0.5 * (normalizedSignedCurvature[u] + normalizedSignedCurvature[nb])
+                            : -0.5 * (normalizedSignedCurvature[u] + normalizedSignedCurvature[nb]);
+
+                        double barrier = 1.0 + 18.0 * Math.Pow(Math.Max(0.0, locusVal - thresh + 0.5), 2.5);
+                        double newCost = vDist[u] + eLen * barrier;
+                        if (newCost < vDist[nb])
+                        {
+                            vDist[nb] = newCost;
+                            vLabel[nb] = vLabel[u];
+                            pq.Add((newCost, nb));
+                        }
+                    }
+                }
+
+                // Assign face labels and enforce connected regions
+                int[] faceLabels = new int[nF];
+                for (int f = 0; f < nF; f++)
+                {
+                    int[] fv = mesh.Faces[f];
+                    faceLabels[f] = vLabel[fv[0]] >= 0 ? vLabel[fv[0]] : 0;
+                }
+                EnforceConnectedClusterRegions(mesh, faceLabels, seeds.Count);
+
+                // Extract sub-meshes per watershed region and classify as Convex or Concave
+                var distinctColors = GenerateDistinctPalette(Math.Max(4, seeds.Count));
+                List<Mesh> builtSubs = BuildSubMeshesFromFaceLabels(mesh, faceLabels, seeds.Count, distinctColors, out _);
+
+                foreach (Mesh sub in builtSubs)
+                {
+                    if (sub == null || sub.Faces.Count == 0) continue;
+                    allPieces.Add(sub);
+
+                    double sumC = 0.0;
+                    int stepV = Math.Max(1, sub.Vertices.Count / 35);
+                    int cntV = 0;
+                    for (int vi = 0; vi < sub.Vertices.Count; vi += stepV)
+                    {
+                        int nearV = mesh.FindClosestVertex(sub.Vertices[vi]);
+                        sumC += normalizedSignedCurvature[nearV];
+                        cntV++;
+                    }
+                    double avgC = cntV > 0 ? sumC / cntV : 0.0;
+                    if (avgC >= 0.0) convexPieces.Add(sub);
+                    else concavePieces.Add(sub);
+                }
+
+                // Extract smooth boundary curves along the Maxima / Minima watershed seams
+                List<Polyline> rawSeams = ExtractLabelBoundaryCurves(mesh, faceLabels);
+                if (rawSeams.Count > 0)
+                {
+                    var seamCurves = rawSeams.ConvertAll(pl => (Curve)new PolylineCurve(pl));
+                    subdivisionCurves = ComputeGeodesicNetworkShorten(mesh.RhinoMesh, seamCurves, 6, true, out _);
+                }
+            }
+
+            return allPieces;
         }
     }
 }
