@@ -1987,22 +1987,30 @@ namespace CraneGH.Core
             int nV = mesh.VertexCount;
             double[] u0 = mesh.MapScalarInputToVertices(rawScalars);
 
-            // Robust quantile clipping of extreme mesh-corner curvature spikes before diffusion
+            // Detect and clip only extreme outlier spikes while recording target domain [targetMin, targetMax]
             double[] sorted = (double[])u0.Clone();
             Array.Sort(sorted);
+            double targetMin = sorted.Length > 0 ? sorted[0] : 0.0;
+            double targetMax = sorted.Length > 0 ? sorted[sorted.Length - 1] : 1.0;
+
             if (nV >= 20)
             {
                 double pLow = sorted[Math.Max(0, (int)(0.02 * nV))];
                 double pHigh = sorted[Math.Min(nV - 1, (int)(0.98 * nV))];
-                if (pHigh > pLow + 1e-12)
+                double innerSpan = pHigh - pLow;
+                // Only clip if the extreme 2% tails are > 2.5x wider than the central 96% span (curvature singularity spikes)
+                if (innerSpan > 1e-12 && (targetMax - targetMin) > 2.5 * innerSpan)
                 {
+                    targetMin = pLow;
+                    targetMax = pHigh;
                     for (int i = 0; i < nV; i++)
                         u0[i] = Math.Max(pLow, Math.Min(pHigh, u0[i]));
                 }
             }
 
-            double h = mesh.MeanEdgeLength;
-            double t = Math.Max(0.0, smoothness) * h * h;
+            double diag = mesh.RhinoMesh.GetBoundingBox(false).Diagonal.Length;
+            double hEff = Math.Max(2.2 * mesh.MeanEdgeLength, 0.05 * diag);
+            double t = Math.Max(0.0, smoothness) * hEff * hEff;
 
             double[] uSmooth;
             if (t <= 1e-12)
@@ -2032,10 +2040,26 @@ namespace CraneGH.Core
                     rhs[i] = mesh.DualAreas[i] * u0[i];
 
                 // Perform 2-step cascaded implicit biharmonic-like smoothing for ultra-clean level sets
-                double[] mid = SparseLinearSolver.SolvePCG(sysBuilder.Build(), rhs, 1200, 1e-8);
+                CsrMatrix sysMat = sysBuilder.Build();
+                double[] mid = SparseLinearSolver.SolvePCG(sysMat, rhs, 1200, 1e-8);
                 for (int i = 0; i < nV; i++)
                     rhs[i] = mesh.DualAreas[i] * mid[i];
-                uSmooth = SparseLinearSolver.SolvePCG(sysBuilder.Build(), rhs, 1200, 1e-8);
+                uSmooth = SparseLinearSolver.SolvePCG(sysMat, rhs, 1200, 1e-8);
+
+                // Range-preserving affine rescaling back to [targetMin, targetMax] so Iso-Values never shrink toward the mean!
+                double minS = double.MaxValue, maxS = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (uSmooth[i] < minS) minS = uSmooth[i];
+                    if (uSmooth[i] > maxS) maxS = uSmooth[i];
+                }
+                double spanS = maxS - minS;
+                double spanT = targetMax - targetMin;
+                if (spanS > 1e-12 && spanT > 1e-12)
+                {
+                    for (int i = 0; i < nV; i++)
+                        uSmooth[i] = targetMin + ((uSmooth[i] - minS) / spanS) * spanT;
+                }
             }
 
             mesh.ComputeGradient(uSmooth, out faceGradients, out _);

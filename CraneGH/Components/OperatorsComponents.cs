@@ -367,8 +367,8 @@ namespace CraneGH.Components
             if (Hidden || Locked) return;
 
             Color cGrad = Color.FromArgb(140, 0, 215, 255);
-            for (int i = 0; i < _gradArrows.Count; i++)
-                args.Display.DrawArrow(_gradArrows[i], cGrad);
+            if (_gradArrows.Count > 0)
+                args.Display.DrawLines(_gradArrows, cGrad, 2);
 
             Color cPath = Attributes.Selected ? Color.FromArgb(255, 255, 80) : Color.FromArgb(255, 195, 40);
             foreach (var pl in _walkPaths)

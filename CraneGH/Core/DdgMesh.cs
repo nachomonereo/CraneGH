@@ -165,7 +165,19 @@ namespace CraneGH.Core
         public double[] MapScalarInputToVertices(IList<double> input)
         {
             double[] res = new double[VertexCount];
-            if (input == null || input.Count == 0) return res;
+            if (input == null || input.Count == 0)
+            {
+                // Fallback: if mesh already carries VertexColors (e.g. from SmoothScalar CM output), decode luminance!
+                if (RhinoMesh.VertexColors.Count == VertexCount)
+                {
+                    for (int i = 0; i < VertexCount; i++)
+                    {
+                        var c = RhinoMesh.VertexColors[i];
+                        res[i] = (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
+                    }
+                }
+                return res;
+            }
 
             if (input.Count == VertexCount)
             {
@@ -183,6 +195,22 @@ namespace CraneGH.Core
                 for (int i = 0; i < VertexCount; i++)
                     if (counts[i] > 1) res[i] /= counts[i];
             }
+            else if (input.Count == FaceCount)
+            {
+                int[] counts = new int[VertexCount];
+                for (int f = 0; f < FaceCount; f++)
+                {
+                    int[] fv = Faces[f];
+                    double val = input[f];
+                    for (int k = 0; k < 3; k++)
+                    {
+                        res[fv[k]] += val;
+                        counts[fv[k]]++;
+                    }
+                }
+                for (int i = 0; i < VertexCount; i++)
+                    if (counts[i] > 1) res[i] /= counts[i];
+            }
             else
             {
                 for (int i = 0; i < VertexCount; i++)
@@ -192,7 +220,7 @@ namespace CraneGH.Core
         }
 
         /// <summary>
-        /// Seamlessly maps a list of per-vertex vectors to DdgMesh vertices.
+        /// Seamlessly maps a list of per-vertex or per-face vectors to DdgMesh vertices.
         /// </summary>
         public Vector3d[] MapVectorInputToVertices(IList<Vector3d> input)
         {
@@ -211,6 +239,19 @@ namespace CraneGH.Core
             {
                 for (int i = 0; i < RawToDdgVertex.Length; i++)
                     res[RawToDdgVertex[i]] += input[i];
+                for (int i = 0; i < VertexCount; i++)
+                    if (res[i].Length > 1e-12) res[i].Unitize();
+            }
+            else if (input.Count == FaceCount)
+            {
+                for (int f = 0; f < FaceCount; f++)
+                {
+                    int[] fv = Faces[f];
+                    Vector3d vf = input[f];
+                    res[fv[0]] += vf;
+                    res[fv[1]] += vf;
+                    res[fv[2]] += vf;
+                }
                 for (int i = 0; i < VertexCount; i++)
                     if (res[i].Length > 1e-12) res[i].Unitize();
             }

@@ -668,9 +668,23 @@ namespace CraneGH.Core
                 faceLabels = nextLabels;
             }
 
+            EnforceConnectedClusterRegions(mesh, faceLabels, K);
+
             Color[] palette = GenerateDistinctPalette(K);
             List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, K, palette, out coloredMesh);
-            boundaryCurves = ExtractLabelBoundaryCurves(mesh, faceLabels);
+
+            List<Polyline> rawBoundaryCurves = ExtractLabelBoundaryCurves(mesh, faceLabels);
+            if (rawBoundaryCurves.Count > 0)
+            {
+                // Stretch & shorten cluster boundaries into taut Geodesic Curves on the mesh (FlipOut / Geodesic Network Shorten)
+                var seamCurves = rawBoundaryCurves.ConvertAll(pl => (Curve)new PolylineCurve(pl));
+                boundaryCurves = ComputeGeodesicNetworkShorten(
+                    mesh.RhinoMesh, seamCurves, 14, true, out _, creaseFeatureWeight > 0.1 ? vertFeat : null);
+            }
+            else
+            {
+                boundaryCurves = rawBoundaryCurves;
+            }
 
             return subMeshes;
         }
@@ -1481,7 +1495,7 @@ namespace CraneGH.Core
         }
 
         // =========================================================================================
-        // 19. CONCENTRIC & SPIRAL CNC MILLING TOOLPATHS ON MESH (Iso-Scallop & Ball-End Offset)
+        // 19. CONCENTRIC & SPIRAL CNC MILLING / 3D PRINTING TOOLPATHS (Rolling-Sphere OffsetGeo & Helical Spiral)
         // =========================================================================================
         public static List<Polyline> ComputeConcentricMillingToolpaths(
             DdgMesh mesh,
@@ -1493,14 +1507,24 @@ namespace CraneGH.Core
             out Polyline connectedSpiralPath,
             out List<Plane> toolFrames,
             out double estimatedScallopHeight,
-            out Mesh coloredDistanceMesh)
+            out Mesh coloredDistanceMesh,
+            out Mesh rollingSphereOffsetGeo,
+            IList<Vector3d> optionalGradientVectors = null)
         {
             int nV = mesh.VertexCount;
             double[] distField;
 
             if (optionalCustomScalar != null && optionalCustomScalar.Count > 0)
             {
+                // Directly respect user's scalar field (e.g. from SmoothScalar or HeatDist)
                 distField = mesh.MapScalarInputToVertices(optionalCustomScalar);
+            }
+            else if (optionalGradientVectors != null && optionalGradientVectors.Count > 0)
+            {
+                // Integrate input scalar gradient / vector field into a smooth scalar potential via Helmholtz-Hodge Eikonal solver!
+                SmoothVectorAndGradientMultiMode(
+                    mesh, optionalGradientVectors, null, 2.0, 1,
+                    out _, out _, out distField, out _);
             }
             else if (optionalSeedPoints != null && optionalSeedPoints.Count > 0)
             {
@@ -1511,11 +1535,17 @@ namespace CraneGH.Core
             }
             else
             {
-                // Default: Concentric inward milling from naked boundary loop (or vertex 0 if closed)
+                // Default: Concentric inward milling from naked boundary loop (or lowest Z vertices if closed)
                 var bndSeeds = new List<int>();
                 for (int i = 0; i < nV; i++)
                     if (mesh.VertexOnBoundary[i]) bndSeeds.Add(i);
-                if (bndSeeds.Count == 0) bndSeeds.Add(0);
+                if (bndSeeds.Count == 0)
+                {
+                    int minZIdx = 0;
+                    for (int i = 1; i < nV; i++)
+                        if (mesh.Positions[i].Z < mesh.Positions[minZIdx].Z) minZIdx = i;
+                    bndSeeds.Add(minZIdx);
+                }
                 distField = ComputeHeatDistance(mesh, bndSeeds, 1.0, out _, out _);
             }
 
@@ -1528,7 +1558,7 @@ namespace CraneGH.Core
 
             double stepD = stepoverDistance > 1e-5
                 ? stepoverDistance
-                : Math.Max(1e-4, (maxD - minD) / 15.0);
+                : Math.Max(1e-4, (maxD - minD) / 16.0);
 
             var isoLevels = new List<double>();
             for (double val = minD + 0.5 * stepD; val < maxD - 1e-6; val += stepD)
@@ -1539,58 +1569,177 @@ namespace CraneGH.Core
 
             List<Polyline> surfacePaths = mesh.ExtractIsoContours(distField, isoLevels);
 
-            // Compute Ball-End Mill Center Offset Paths (P_center = P_contact + R_tool * N) and 5-Axis/6-Axis Tool Frames
-            toolCenterOffsetPaths = new List<Polyline>(surfacePaths.Count);
-            toolFrames = new List<Plane>();
-            var spiralPts = new List<Point3d>();
-
-            double rTool = Math.Max(0.0, ballToolRadius);
+            // Compute Rolling-Sphere Offset Geometry (OffsetGeo) when ballToolRadius > 0
+            double rTool = Math.Max(0.0, Math.Abs(ballToolRadius));
             estimatedScallopHeight = rTool > 1e-6 ? (stepD * stepD) / (8.0 * rTool) : 0.0;
 
-            for (int cIdx = 0; cIdx < surfacePaths.Count; cIdx++)
+            if (rTool > 1e-6)
             {
-                Polyline pl = surfacePaths[cIdx];
-                if (pl == null || pl.Count < 2) continue;
+                bool exteriorSide = ballToolRadius >= 0.0;
+                ComputeRollingSpheresAndOffset(
+                    mesh, rTool, exteriorSide, 12,
+                    out _, out rollingSphereOffsetGeo, out _, out _);
 
-                var offsetPts = new List<Point3d>(pl.Count);
-                for (int i = 0; i < pl.Count; i++)
-                {
-                    Point3d p = pl[i];
-                    MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(p, 0.0);
-                    Vector3d n = Vector3d.ZAxis;
-                    if (mp != null)
-                    {
-                        MeshFace mf = mesh.RhinoMesh.Faces[mp.FaceIndex];
-                        n = mp.T[0] * mesh.VertexNormals[mf.A] +
-                            mp.T[1] * mesh.VertexNormals[mf.B] +
-                            mp.T[2] * mesh.VertexNormals[mf.C];
-                        if (n.Length > 1e-12) n.Unitize();
-                    }
-
-                    Point3d pCenter = p + rTool * n;
-                    offsetPts.Add(pCenter);
-                    spiralPts.Add(pCenter);
-
-                    // Sample tool frames along the path
-                    if (i % Math.Max(1, pl.Count / 8) == 0)
-                    {
-                        Vector3d tangent = (i < pl.Count - 1) ? (pl[i + 1] - pl[i]) : (pl[i] - pl[i - 1]);
-                        tangent -= (tangent * n) * n;
-                        if (tangent.Length < 1e-12)
-                            tangent = Vector3d.CrossProduct(n, Math.Abs(n.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
-                        tangent.Unitize();
-                        Vector3d binormal = Vector3d.CrossProduct(n, tangent);
-                        binormal.Unitize();
-                        toolFrames.Add(new Plane(pCenter, tangent, binormal));
-                    }
-                }
-
-                toolCenterOffsetPaths.Add(new Polyline(offsetPts));
+                var ddgOffset = new DdgMesh(rollingSphereOffsetGeo);
+                toolCenterOffsetPaths = ddgOffset.ExtractIsoContours(distField, isoLevels);
+                connectedSpiralPath = BuildContinuousHelicalSpiralOnMesh(ddgOffset.RhinoMesh, toolCenterOffsetPaths);
+            }
+            else
+            {
+                rollingSphereOffsetGeo = mesh.RhinoMesh.DuplicateMesh();
+                toolCenterOffsetPaths = new List<Polyline>(surfacePaths);
+                connectedSpiralPath = BuildContinuousHelicalSpiralOnMesh(mesh.RhinoMesh, surfacePaths);
             }
 
-            connectedSpiralPath = new Polyline(spiralPts);
+            // Extract 5/6-Axis Tool Frames along the Offset Paths (or Spiral)
+            toolFrames = new List<Plane>();
+            Mesh targetM = rollingSphereOffsetGeo;
+            IList<Polyline> frameSourcePaths = connectedSpiralPath.Count >= 4
+                ? new List<Polyline> { connectedSpiralPath }
+                : toolCenterOffsetPaths;
+
+            foreach (Polyline pl in frameSourcePaths)
+            {
+                if (pl == null || pl.Count < 2) continue;
+                int fStride = Math.Max(1, pl.Count / 40);
+                for (int i = 0; i < pl.Count; i += fStride)
+                {
+                    Point3d p = pl[i];
+                    MeshPoint mp = targetM.ClosestMeshPoint(p, 0.0);
+                    Vector3d n = mp != null ? targetM.NormalAt(mp) : Vector3d.ZAxis;
+                    if (n.Length < 1e-12) n = Vector3d.ZAxis;
+                    n.Unitize();
+
+                    Vector3d tangent = (i < pl.Count - 1) ? (pl[i + 1] - pl[i]) : (pl[i] - pl[i - 1]);
+                    tangent -= (tangent * n) * n;
+                    if (tangent.Length < 1e-12)
+                        tangent = Vector3d.CrossProduct(n, Math.Abs(n.X) < 0.9 ? Vector3d.XAxis : Vector3d.YAxis);
+                    tangent.Unitize();
+                    Vector3d binormal = Vector3d.CrossProduct(n, tangent);
+                    binormal.Unitize();
+                    toolFrames.Add(new Plane(p, tangent, binormal));
+                }
+            }
+
             coloredDistanceMesh = ColorMeshByScalar(mesh.RhinoMesh, distField, false);
             return surfacePaths;
+        }
+
+        /// <summary>
+        /// Connects a sequence of ordered iso-contour loops/curves into a smooth, continuous Helical Spiral
+        /// on the mesh by ramping linearly from contour k to contour k+1 over each revolution!
+        /// </summary>
+        public static Polyline BuildContinuousHelicalSpiralOnMesh(Mesh refMesh, IList<Polyline> orderedContours)
+        {
+            var spiralPts = new List<Point3d>();
+            if (orderedContours == null || orderedContours.Count == 0)
+                return new Polyline();
+
+            // Filter valid contours with >= 2 points
+            var validLoops = new List<Polyline>();
+            foreach (var pl in orderedContours)
+            {
+                if (pl != null && pl.Count >= 2)
+                    validLoops.Add(new Polyline(pl));
+            }
+            if (validLoops.Count == 0) return new Polyline();
+            if (validLoops.Count == 1) return validLoops[0];
+
+            int samplesPerTurn = 48;
+
+            // Helper: resample a polyline into N uniform points, cyclically shifted so index 0 is closest to refStartPt
+            Point3d[] ResampleAndAlignLoop(Polyline loop, Point3d refStartPt, Vector3d preferredTangent)
+            {
+                var crv = new PolylineCurve(loop);
+                bool isClosed = loop[0].DistanceTo(loop[loop.Count - 1]) < crv.GetLength() * 0.15;
+
+                Point3d[] pts = new Point3d[samplesPerTurn];
+                double[] tParams = crv.DivideByCount(samplesPerTurn - 1, true);
+                if (tParams == null || tParams.Length < samplesPerTurn)
+                {
+                    for (int i = 0; i < samplesPerTurn; i++)
+                        pts[i] = loop[Math.Min(loop.Count - 1, (i * loop.Count) / samplesPerTurn)];
+                }
+                else
+                {
+                    for (int i = 0; i < samplesPerTurn; i++)
+                        pts[i] = crv.PointAt(tParams[i]);
+                }
+
+                if (isClosed && refStartPt.IsValid)
+                {
+                    // Shift cyclic start index to the point closest to refStartPt
+                    int bestIdx = 0;
+                    double minD2 = double.MaxValue;
+                    for (int i = 0; i < samplesPerTurn - 1; i++)
+                    {
+                        double d2 = pts[i].DistanceToSquared(refStartPt);
+                        if (d2 < minD2) { minD2 = d2; bestIdx = i; }
+                    }
+
+                    var shifted = new Point3d[samplesPerTurn];
+                    for (int i = 0; i < samplesPerTurn - 1; i++)
+                        shifted[i] = pts[(bestIdx + i) % (samplesPerTurn - 1)];
+                    shifted[samplesPerTurn - 1] = shifted[0];
+                    pts = shifted;
+                }
+
+                // Ensure consistent winding direction with previous loop
+                if (preferredTangent.Length > 1e-8)
+                {
+                    Vector3d curTang = pts[Math.Min(3, samplesPerTurn - 1)] - pts[0];
+                    if ((curTang * preferredTangent) < 0.0)
+                        Array.Reverse(pts);
+                }
+
+                return pts;
+            }
+
+            Point3d prevStart = validLoops[0][0];
+            Vector3d prevTang = validLoops[0].Count >= 2 ? (validLoops[0][1] - validLoops[0][0]) : Vector3d.Zero;
+
+            var resampledLoops = new List<Point3d[]>(validLoops.Count);
+            for (int k = 0; k < validLoops.Count; k++)
+            {
+                Point3d[] aligned = ResampleAndAlignLoop(validLoops[k], prevStart, prevTang);
+                resampledLoops.Add(aligned);
+                prevStart = aligned[0];
+                prevTang = aligned[Math.Min(3, samplesPerTurn - 1)] - aligned[0];
+            }
+
+            // Build helical spiral turns: on turn k, interpolate P(s) = (1 - s) * Loop_k(s) + s * Loop_{k+1}(s) projected onto refMesh!
+            for (int k = 0; k < resampledLoops.Count - 1; k++)
+            {
+                Point3d[] loopA = resampledLoops[k];
+                Point3d[] loopB = resampledLoops[k + 1];
+
+                // Skip merging if loopA and loopB are on completely disconnected islands far apart
+                if (loopA[0].DistanceTo(loopB[0]) > refMesh.GetBoundingBox(false).Diagonal.Length * 0.35)
+                {
+                    for (int i = 0; i < samplesPerTurn; i++) spiralPts.Add(loopA[i]);
+                    continue;
+                }
+
+                for (int i = 0; i < samplesPerTurn - 1; i++)
+                {
+                    double s = i / (double)(samplesPerTurn - 1);
+                    // Smooth Hermite ramp for seamless C1 transition between turns
+                    Point3d blended = (1.0 - s) * loopA[i] + s * loopB[i];
+                    if (refMesh != null)
+                    {
+                        MeshPoint mp = refMesh.ClosestMeshPoint(blended, 0.0);
+                        if (mp != null) blended = mp.Point;
+                    }
+                    spiralPts.Add(blended);
+                }
+            }
+
+            // Add final loop
+            Point3d[] lastLoop = resampledLoops[resampledLoops.Count - 1];
+            for (int i = 0; i < samplesPerTurn; i++)
+                spiralPts.Add(lastLoop[i]);
+
+            return new Polyline(spiralPts);
         }
 
         // =========================================================================================
@@ -2902,12 +3051,12 @@ namespace CraneGH.Core
                 }
             }
 
-            // 2. Gather obstacle sample points & normals for fast Tangent-Point Repulsive Shell evaluation
+            // 2. Prepare External Collision Obstacle Meshes for Exact Surface Closest-Point Spindle Evaluation
             BoundingBox sceneBox = new BoundingBox(baseFrames[0].Origin, baseFrames[nSteps - 1].Origin);
             for (int i = 0; i < nSteps; i++) sceneBox.Union(baseFrames[i].Origin);
 
+            var validObsMeshes = new List<Mesh>();
             var obsPts = new List<Point3d>();
-            var obsNrms = new List<Vector3d>();
 
             if (obstacleMeshes != null)
             {
@@ -2916,22 +3065,11 @@ namespace CraneGH.Core
                     if (om == null || om.Vertices.Count == 0) continue;
                     om.Normals.ComputeNormals();
                     sceneBox.Union(om.GetBoundingBox(false));
+                    validObsMeshes.Add(om);
 
-                    // Subsample obstacle vertices + face centers up to ~600 representative repulsive sites per mesh
-                    int vStride = Math.Max(1, om.Vertices.Count / 450);
-                    for (int v = 0; v < om.Vertices.Count; v += vStride)
-                    {
-                        obsPts.Add(om.Vertices[v]);
-                        Vector3d n = om.Normals.Count > v ? (Vector3d)om.Normals[v] : Vector3d.ZAxis;
-                        if (n.Length > 1e-10) n.Unitize();
-                        obsNrms.Add(n);
-                    }
-                    int fStride = Math.Max(1, om.Faces.Count / 250);
+                    int fStride = Math.Max(1, om.Faces.Count / 120);
                     for (int f = 0; f < om.Faces.Count; f += fStride)
-                    {
                         obsPts.Add(om.Faces.GetFaceCenter(f));
-                        obsNrms.Add( Vector3d.ZAxis );
-                    }
                 }
             }
 
@@ -2944,7 +3082,7 @@ namespace CraneGH.Core
             wristSingularityAxis.Unitize();
             Point3d robotBaseColumn = sceneBox.Center - new Vector3d(0.0, diag * 0.65, 0.0);
 
-            // Helper: Evaluate Repulsive Shell Energy for a candidate Plane (TCP + Spindle Cylinder + Holder Plane + Singularity)
+            // Helper: Evaluate Repulsive Shell Energy for a candidate Plane against External Obstacles + IK Singularity
             double EvaluateSpindleShellEnergy(Point3d tcp, Vector3d zAxis, out double minClearance)
             {
                 zAxis.Unitize();
@@ -2953,25 +3091,24 @@ namespace CraneGH.Core
                 Vector3d vAx = Vector3d.CrossProduct(zAxis, uAx);
                 vAx.Unitize();
 
-                // Sample 7 points along the Spindle Shell + Tool Holder Plane Disk
-                // 0: TCP tip, 1..3: Spindle shaft at 1.2R, 2.5R, 4.0R along +Z, 4..6: Holder Plane ring at 1.5R
+                // Sample 7 spheres along the Spindle Shell + Tool Holder Plane Disk (lifted off TCP so only external obstacles collide)
                 Point3d[] shellPts = new Point3d[7];
                 double[] shellRadii = new double[7];
 
-                shellPts[0] = tcp + zAxis * (0.25 * rSpindle);
-                shellRadii[0] = 0.25 * rSpindle;
+                shellPts[0] = tcp + zAxis * (0.65 * rSpindle);
+                shellRadii[0] = 0.35 * rSpindle;
 
-                shellPts[1] = tcp + zAxis * (1.25 * rSpindle);
+                shellPts[1] = tcp + zAxis * (1.45 * rSpindle);
                 shellRadii[1] = 0.85 * rSpindle;
 
-                shellPts[2] = tcp + zAxis * (2.60 * rSpindle);
+                shellPts[2] = tcp + zAxis * (2.75 * rSpindle);
                 shellRadii[2] = 1.00 * rSpindle;
 
                 shellPts[3] = tcp + zAxis * spindleLen;
                 shellRadii[3] = 1.05 * rSpindle;
 
-                // Tool holder flange disk (checks if the Plane itself collides with geometry!)
-                Point3d flangeCenter = tcp + zAxis * (1.45 * rSpindle);
+                // Tool holder flange disk (checks if the Plane Holder itself collides with external obstacles!)
+                Point3d flangeCenter = tcp + zAxis * (1.60 * rSpindle);
                 shellPts[4] = flangeCenter + uAx * (1.25 * rSpindle);
                 shellRadii[4] = 0.45 * rSpindle;
                 shellPts[5] = flangeCenter - uAx * (1.25 * rSpindle);
@@ -2982,30 +3119,36 @@ namespace CraneGH.Core
                 minClearance = diag;
                 double energy = 0.0;
 
-                // A. Tangent-Point Repulsive Shell Energy against Obstacles
-                int nObs = obsPts.Count;
-                for (int o = 0; o < nObs; o++)
+                // A. Exact Surface Closest-Point Repulsive Shell Energy against External Obstacle Meshes
+                int sStart = (mode == 0) ? 1 : 0; // In Mode 0 (TCP fixed on path), only check Spindle Body & Holder Plane (s=1..6)
+                for (int mIdx = 0; mIdx < validObsMeshes.Count; mIdx++)
                 {
-                    Point3d op = obsPts[o];
-                    for (int s = 0; s < 7; s++)
-                    {
-                        // For s == 0 (TCP tip) in Mode 0 (printing/milling on the mesh), allow TCP contact with the part
-                        if (mode == 0 && s == 0) continue;
+                    Mesh om = validObsMeshes[mIdx];
+                    bool isClosedObs = om.IsClosed;
 
-                        double d = shellPts[s].DistanceTo(op) - shellRadii[s];
+                    for (int s = sStart; s < 7; s++)
+                    {
+                        Point3d sp = shellPts[s];
+                        Point3d cp = om.ClosestPoint(sp);
+                        double distToSurf = sp.DistanceTo(cp);
+
+                        if (isClosedObs && distToSurf < 3.0 * rSpindle && om.IsPointInside(sp, 1e-4, false))
+                            distToSurf = -distToSurf;
+
+                        double d = distToSurf - shellRadii[s];
                         if (d < minClearance) minClearance = d;
 
                         if (d <= 0.0)
                         {
-                            // Collision penetration barrier
+                            // Hard external obstacle collision barrier
                             double pen = Math.Abs(d) / Math.Max(1e-5, rSpindle);
-                            energy += 12.0 + 35.0 * pen * pen;
+                            energy += 18.0 + 48.0 * pen * pen;
                         }
-                        else if (d < 2.5 * rSpindle)
+                        else if (d < 2.2 * rSpindle)
                         {
-                            // Smooth Tangent-Point 1/d^2 repulsive shell falloff
-                            double ratio = rSpindle / Math.Max(0.05 * rSpindle, d);
-                            energy += 0.35 * ratio * ratio;
+                            // Smooth Tangent-Point repulsive shell falloff near external obstacle
+                            double ratio = (2.2 * rSpindle - d) / (2.2 * rSpindle);
+                            energy += 4.5 * ratio * ratio * ratio;
                         }
                     }
                 }

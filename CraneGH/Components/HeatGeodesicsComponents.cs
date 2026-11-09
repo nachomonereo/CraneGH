@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Types;
 using Rhino.Geometry;
 using CraneGH.Core;
 
@@ -245,12 +246,11 @@ namespace CraneGH.Components
     public class GH_ExactIsoCut : GH_Component
     {
         private readonly List<Polyline> _cutCurves = new List<Polyline>();
-        private readonly List<Point3d> _labelPts = new List<Point3d>();
-        private readonly List<string> _labelTexts = new List<string>();
+        private Polyline _spiralCurve;
 
         public GH_ExactIsoCut()
-          : base("Exact Iso-Cut & Band Slicer", "IsoCut",
-              "Extracts iso-contours and topologically cuts/slices a mesh at exact user-specified Scalar Iso-Values (e.g. 4.55 in real distance units, or 0.5 if scalar is in [0..1]).",
+          : base("Iso-Splitting Lines & Spiral", "IsoCut",
+              "Extracts fast Iso-Splitting Curves and a Continuous Spiral Curve on a mesh from any Scalar Field, Smoothed Scalar/Mesh, or Scalar Gradient (without slicing the mesh).",
               "CraneGH", "02. Geodesics & Iso-Cut")
         {
         }
@@ -259,59 +259,111 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Scalar Field", "u", "Custom or computed scalar values per vertex (real distances, coordinates, curvature, or [0..1] values)", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Iso-Values", "V", "Exact scalar value(s) at which to cut (e.g. 4.55 for real distance, or 0.5 for midpoint of [0..1])", GH_ParamAccess.list, 0.5);
-            pManager.AddBooleanParameter("Normalized [0..1]", "N", "False = V is evaluated in exact real scalar units (e.g. 4.55); True = V is a normalized fraction [0..1] between Min(u) and Max(u)", GH_ParamAccess.item, false);
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (or Colored Mesh CM from SmoothScalar)", GH_ParamAccess.item);
+            int idxU = pManager.AddGenericParameter("Scalar or Gradient", "u", "Smoothed Scalar values (double) or Scalar Gradient vectors (Vector3d) (if empty, reads from Colored Mesh M or boundary heat distance)", GH_ParamAccess.list);
+            pManager[idxU].Optional = true;
+            pManager.AddNumberParameter("Iso-Values or Count", "V", "If a single integer >= 2 (e.g. 12), extracts that many evenly-spaced iso-curves; otherwise extracts at exact value(s) V", GH_ParamAccess.list, 12.0);
+            pManager.AddBooleanParameter("Normalized [0..1]", "N", "True = V is evaluated as normalized fraction(s) in [0..1]; False = V is in real scalar units (or line count if single integer >= 2)", GH_ParamAccess.item, false);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Iso-Cut Curves", "C", "Exact iso-contour curves at u = V", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Lower Mesh (u <= V)", "ML", "Sub-mesh where scalar u <= first Iso-Value V", GH_ParamAccess.item);
-            pManager.AddMeshParameter("Upper Mesh (u >= V)", "MU", "Sub-mesh where scalar u >= last Iso-Value V", GH_ParamAccess.item);
-            pManager.AddMeshParameter("Iso-Band Meshes", "MB", "Sliced sub-mesh bands between consecutive Iso-Values", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by scalar field u", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Iso-Splitting Curves", "C", "Extracted iso-contour curves on the mesh (no mesh cutting overhead)", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Spiral Iso-Curve", "SP", "Continuous helical spiral curve connecting all iso-levels smoothly", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Resolved Scalar", "S", "Active scalar values per vertex used for the iso-lines", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the active scalar field", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             _cutCurves.Clear();
-            _labelPts.Clear();
-            _labelTexts.Clear();
+            _spiralCurve = null;
 
             Mesh m = null;
-            var uList = new List<double>();
+            var rawU = new List<object>();
             var isoVals = new List<double>();
             bool normalized = false;
 
             if (!DA.GetData(0, ref m) || m == null) return;
-            if (!DA.GetDataList(1, uList) || uList.Count == 0) return;
-            if (!DA.GetDataList(2, isoVals) || isoVals.Count == 0) isoVals.Add(0.5);
+            DA.GetDataList(1, rawU);
+            if (!DA.GetDataList(2, isoVals) || isoVals.Count == 0) isoVals.Add(12.0);
             DA.GetData(3, ref normalized);
 
             var ddg = new DdgMesh(m);
-            List<Polyline> crvs = DdgAlgorithms.ComputeExactIsoCutAndBands(
-                ddg, uList, isoVals, normalized,
-                out Mesh lowerM, out Mesh upperM, out List<Mesh> bands,
-                out Mesh coloredM, out List<double> resolvedIsos);
+            var inScalars = new List<double>();
+            var inVecs = new List<Vector3d>();
 
-            _cutCurves.AddRange(crvs);
-            for (int i = 0; i < crvs.Count; i++)
+            foreach (object obj in rawU)
             {
-                if (crvs[i].Count > 0)
-                {
-                    _labelPts.Add(crvs[i][crvs[i].Count / 2]);
-                    double vTag = resolvedIsos[Math.Min(i, resolvedIsos.Count - 1)];
-                    _labelTexts.Add($"u = {vTag:0.###}");
-                }
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is double d) inScalars.Add(d);
+                else if (val is int iv) inScalars.Add(iv);
+                else if (val is Vector3d vec) inVecs.Add(vec);
             }
 
+            double[] u;
+            if (inScalars.Count > 0)
+            {
+                u = ddg.MapScalarInputToVertices(inScalars);
+            }
+            else if (inVecs.Count > 0)
+            {
+                DdgAlgorithms.SmoothVectorAndGradientMultiMode(
+                    ddg, inVecs, null, 2.0, 1, out _, out _, out u, out _);
+            }
+            else if (m.VertexColors.Count == m.Vertices.Count)
+            {
+                // Decode smoothed scalar from Colored Mesh CM (e.g. from SmoothScalar) and smooth slightly
+                double[] rawCol = ddg.MapScalarInputToVertices(null);
+                u = DdgAlgorithms.SmoothScalarField(ddg, rawCol, 1.5, 0.0, out _, out _);
+            }
+            else
+            {
+                var seeds = new List<int>();
+                for (int i = 0; i < ddg.VertexCount; i++)
+                    if (ddg.VertexOnBoundary[i]) seeds.Add(i);
+                if (seeds.Count == 0) seeds.Add(0);
+                u = DdgAlgorithms.ComputeHeatDistance(ddg, seeds, 1.0, out _, out _);
+            }
+
+            double minU = double.MaxValue, maxU = double.MinValue;
+            for (int i = 0; i < ddg.VertexCount; i++)
+            {
+                if (u[i] < minU) minU = u[i];
+                if (u[i] > maxU) maxU = u[i];
+            }
+            double spanU = Math.Max(1e-12, maxU - minU);
+
+            var levels = new List<double>();
+            if (!normalized && isoVals.Count == 1 && isoVals[0] >= 2.0 && Math.Abs(isoVals[0] - Math.Round(isoVals[0])) < 1e-5 && (isoVals[0] > maxU || minU >= 0.0))
+            {
+                // Treat single integer >= 2 (e.g. 12) as number of evenly-spaced iso-splitting lines!
+                int count = Math.Min(250, (int)Math.Round(isoVals[0]));
+                for (int k = 1; k <= count; k++)
+                {
+                    double frac = k / (double)(count + 1);
+                    levels.Add(minU + frac * spanU);
+                }
+            }
+            else
+            {
+                foreach (double val in isoVals)
+                {
+                    levels.Add(normalized ? (minU + val * spanU) : val);
+                }
+            }
+            levels.Sort();
+
+            List<Polyline> crvs = ddg.ExtractIsoContours(u, levels);
+            _cutCurves.AddRange(crvs);
+            _spiralCurve = DdgAlgorithms.BuildContinuousHelicalSpiralOnMesh(ddg.RhinoMesh, crvs);
+            Mesh coloredM = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, u, false);
+
             DA.SetDataList(0, crvs);
-            DA.SetData(1, lowerM);
-            DA.SetData(2, upperM);
-            DA.SetDataList(3, bands);
-            DA.SetData(4, coloredM);
+            DA.SetData(1, _spiralCurve);
+            DA.SetDataList(2, u);
+            DA.SetData(3, coloredM);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
@@ -321,10 +373,10 @@ namespace CraneGH.Components
 
             Color cCurve = Attributes.Selected ? Color.FromArgb(255, 255, 80) : Color.FromArgb(255, 210, 40);
             foreach (var pl in _cutCurves)
-                args.Display.DrawPolyline(pl, cCurve, 3);
+                args.Display.DrawPolyline(pl, cCurve, 2);
 
-            for (int i = 0; i < _labelPts.Count; i++)
-                args.Display.DrawDot(_labelPts[i], _labelTexts[i], Color.FromArgb(30, 35, 45), Color.Gold);
+            if (_spiralCurve != null && _spiralCurve.Count >= 2)
+                args.Display.DrawPolyline(_spiralCurve, Color.FromArgb(0, 245, 210), 2);
         }
 
         public override Guid ComponentGuid => new Guid("A102B202-C302-4D02-9E02-000000000034");

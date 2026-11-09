@@ -218,19 +218,19 @@ namespace CraneGH.Components
         {
             pManager.AddMeshParameter("Mesh", "M", "Surface mesh for CNC Milling or Curved 3D Printing", GH_ParamAccess.item);
             pManager.AddNumberParameter("Stepover / Pitch", "D", "Exact physical stepover or layer distance in Rhino units (e.g. 2.5 or 4.55; 0 = automatic)", GH_ParamAccess.item, 0.0);
-            pManager.AddNumberParameter("Tool / Nozzle Offset", "R", "Ball-end mill radius or nozzle standoff offset (P + R * Normal)", GH_ParamAccess.item, 0.0);
-            int idxG = pManager.AddGeometryParameter("Source Geometry", "G", "Optional external Curves, Points, or Meshes to drive the paths (leave empty to start from mesh boundary)", GH_ParamAccess.list);
-            pManager[idxG].Optional = true;
+            pManager.AddNumberParameter("Tool / Nozzle Offset", "R", "Ball-end mill radius or nozzle standoff offset (computed via Tangent-Point Rolling Spheres!)", GH_ParamAccess.item, 0.0);
+            int idxS = pManager.AddGenericParameter("Scalar / Gradient / Source", "S", "Smoothed Scalar Field (double), Scalar Gradient / Vector Field (Vector3d), or External Source Geometry (Curve, Point, Mesh)", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Surface Contact Paths", "CP", "Concentric paths on the mesh separated by exact Distance D", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Tool-Center Offset Paths", "TP", "3D offset toolpaths (P + R * N)", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Connected Spiral Path", "SP", "Continuous spiral toolpath across all passes", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Surface Iso-Paths", "CP", "Concentric iso-paths on the mesh separated by exact Distance D", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Offset Toolpaths", "TP", "3D offset toolpaths computed on the Rolling-Sphere Offset Geometry", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Spiral Iso-Path", "SP", "Continuous helical spiral toolpath connecting all passes smoothly", GH_ParamAccess.item);
             pManager.AddPlaneParameter("Smooth CNC / Print Planes", "F", "Collision-tilted, smoothed 5/6-Axis Planes without drastic turns", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Scallop Height", "H", "Estimated CNC scallop height h = D^2 / (8 * R)", GH_ParamAccess.item);
-            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by driving geodesic distance field", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Rolling-Sphere OffsetGeo", "OffsetGeo", "Collision-free Rolling-Sphere Offset Mesh used for the milling toolpath offset", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the driving scalar or gradient field", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
@@ -241,21 +241,40 @@ namespace CraneGH.Components
             Mesh m = null;
             double stepover = 0.0;
             double toolR = 0.0;
-            var geoms = new List<GeometryBase>();
+            var rawSource = new List<object>();
 
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetData(1, ref stepover);
             DA.GetData(2, ref toolR);
-            DA.GetDataList(3, geoms);
+            DA.GetDataList(3, rawSource);
 
             var ddg = new DdgMesh(m);
             _axisScale = ddg.MeanEdgeLength * 0.9;
 
+            var inScalars = new List<double>();
+            var inGrads = new List<Vector3d>();
+            var inGeoms = new List<GeometryBase>();
+
+            foreach (object obj in rawSource)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is double d) inScalars.Add(d);
+                else if (val is int iv) inScalars.Add(iv);
+                else if (val is Vector3d vec) inGrads.Add(vec);
+                else if (val is Point3d pt) inGeoms.Add(new Rhino.Geometry.Point(pt));
+                else if (val is GeometryBase gb) inGeoms.Add(gb);
+            }
+
             double[] customDist = null;
-            if (geoms.Count > 0)
+            if (inScalars.Count > 0)
+            {
+                customDist = ddg.MapScalarInputToVertices(inScalars);
+            }
+            else if (inGeoms.Count > 0)
             {
                 customDist = DdgAlgorithms.ComputeExternalGeometryHeatDistance(
-                    ddg, geoms, 1.0, out _, out _, out _, out _);
+                    ddg, inGeoms, 1.0, out _, out _, out _, out _);
             }
 
             List<Polyline> contactPaths = DdgAlgorithms.ComputeConcentricMillingToolpaths(
@@ -267,12 +286,14 @@ namespace CraneGH.Components
                 out List<Polyline> toolCenterPaths,
                 out Polyline spiralPath,
                 out List<Plane> rawFrames,
-                out double scallop,
-                out Mesh coloredM);
+                out _,
+                out Mesh coloredM,
+                out Mesh rollingOffsetGeo,
+                inGrads.Count > 0 ? inGrads : null);
 
             // Smooth and collision-stabilize the 5/6-Axis tool frames so drastic turns are eliminated!
             List<Plane> smoothFrames = DdgAlgorithms.ComputeCollisionFreeSmoothPlanes(
-                ddg, rawFrames, 2.5, Math.Max(ddg.MeanEdgeLength, toolR), out _, out _);
+                ddg, rawFrames, 2.5, Math.Max(ddg.MeanEdgeLength, Math.Abs(toolR)), out _, out _);
 
             _toolpaths.AddRange(toolCenterPaths);
             _frames.AddRange(smoothFrames);
@@ -281,7 +302,7 @@ namespace CraneGH.Components
             DA.SetDataList(1, toolCenterPaths);
             DA.SetData(2, spiralPath);
             DA.SetDataList(3, smoothFrames);
-            DA.SetData(4, scallop);
+            DA.SetData(4, rollingOffsetGeo);
             DA.SetData(5, coloredM);
         }
 

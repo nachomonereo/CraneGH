@@ -292,14 +292,18 @@ namespace CraneGH.Components
 
     public class GH_PrincipalCrossField : GH_Component
     {
+        private readonly List<Line> _uLines = new List<Line>();
+        private readonly List<Line> _vLines = new List<Line>();
+        private readonly List<Point3d> _singularities = new List<Point3d>();
+
         public GH_PrincipalCrossField()
-          : base("Principal Cross Field", "CrossField",
-              "Computes a smooth 4-way symmetric Cross Field (4-RoSy) on a mesh aligned with principal curvatures and sharp feature creases, outputting U/V directions, visual 3D Cross Lines, and singularities.",
+          : base("Principal Cross Field (X-Cross)", "CrossField",
+              "Computes a smooth 4-way symmetric Cross Field (4-RoSy) on a mesh aligned with principal curvatures and sharp feature creases, outputting U/V directions, lightweight X-Cross line segments, and singularities.",
               "CraneGH", "03. Vector & Direction Fields")
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.hidden;
+        public override GH_Exposure Exposure => GH_Exposure.primary;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("CrossField");
 
@@ -307,19 +311,23 @@ namespace CraneGH.Components
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
             pManager.AddNumberParameter("Curvature Align", "A", "Alignment weight to principal curvatures and sharp creases (0 = globally smoothest, 1 = strictly curvature-aligned)", GH_ParamAccess.item, 0.5);
-            pManager.AddNumberParameter("Cross Scale", "S", "Visual scale factor for the output 3D cross lines (relative to edge length)", GH_ParamAccess.item, 0.65);
+            pManager.AddNumberParameter("Cross Scale", "S", "Visual scale factor for the output 3D X-cross line segments (relative to edge length)", GH_ParamAccess.item, 0.65);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddVectorParameter("U Direction", "U", "First cross tangent direction vector per vertex", GH_ParamAccess.list);
             pManager.AddVectorParameter("V Direction", "V", "Orthogonal second cross tangent direction vector per vertex", GH_ParamAccess.list);
-            pManager.AddLineParameter("Cross Lines", "Crx", "Visual 4-way cross lines at every vertex on the mesh", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross Lines", "Crx", "Lightweight 4-way X-cross line segments at every vertex on the mesh", GH_ParamAccess.list);
             pManager.AddPointParameter("Singularities", "P", "Detected cross-field singularity points (3-way or 5-way quad vertices)", GH_ParamAccess.list);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            _uLines.Clear();
+            _vLines.Clear();
+            _singularities.Clear();
+
             Mesh m = null;
             double align = 0.5;
             double scale = 0.65;
@@ -329,20 +337,42 @@ namespace CraneGH.Components
 
             var ddg = new DdgMesh(m);
             Vector3d[] uDir = DdgAlgorithms.ComputeOptimalDirectionField(ddg, 4, align, out Vector3d[] vDir, out List<Point3d> sings);
+            _singularities.AddRange(sings);
 
             double arm = 0.5 * Math.Max(0.05, scale) * ddg.MeanEdgeLength;
             var crossLines = new List<Line>(ddg.VertexCount * 2);
+            int stride = Math.Max(1, ddg.VertexCount / 1200);
             for (int i = 0; i < ddg.VertexCount; i++)
             {
                 Point3d p = ddg.Positions[i];
-                crossLines.Add(new Line(p - arm * uDir[i], p + arm * uDir[i]));
-                crossLines.Add(new Line(p - arm * vDir[i], p + arm * vDir[i]));
+                Line lu = new Line(p - arm * uDir[i], p + arm * uDir[i]);
+                Line lv = new Line(p - arm * vDir[i], p + arm * vDir[i]);
+                crossLines.Add(lu);
+                crossLines.Add(lv);
+                if (i % stride == 0)
+                {
+                    _uLines.Add(lu);
+                    _vLines.Add(lv);
+                }
             }
 
             DA.SetDataList(0, uDir);
             DA.SetDataList(1, vDir);
             DA.SetDataList(2, crossLines);
             DA.SetDataList(3, sings);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _uLines.Count == 0) return;
+
+            Color cU = Attributes.Selected ? Color.FromArgb(255, 240, 80) : Color.FromArgb(0, 225, 255);
+            Color cV = Attributes.Selected ? Color.FromArgb(255, 160, 60) : Color.FromArgb(255, 95, 80);
+            args.Display.DrawLines(_uLines, cU, 2);
+            args.Display.DrawLines(_vLines, cV, 2);
+            foreach (Point3d sp in _singularities)
+                args.Display.DrawPoint(sp, Rhino.Display.PointStyle.RoundSimple, 6, Color.FromArgb(255, 230, 40));
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000026");
@@ -489,8 +519,7 @@ namespace CraneGH.Components
             if (Hidden || Locked || _previewArrows.Count == 0) return;
 
             Color cArrow = Attributes.Selected ? Color.FromArgb(255, 235, 60) : Color.FromArgb(0, 225, 255);
-            for (int i = 0; i < _previewArrows.Count; i++)
-                args.Display.DrawArrow(_previewArrows[i], cArrow);
+            args.Display.DrawLines(_previewArrows, cArrow, 2);
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000030");
@@ -505,8 +534,8 @@ namespace CraneGH.Components
         private int _displayMode = 0;
 
         public GH_MeshFieldDisplay()
-          : base("Vector, Cross & Gradient Inspector", "VecView",
-              "Visualizes Vector Arrows (0), 4-RoSy Cross Fields (1), Geodesic Gradients + Wavefront Ticks (2), and Covariant Vector Gradients / Divergence / Curl (3) on a mesh.",
+          : base("Vector, X-Cross & Gradient Inspector", "VecView",
+              "Visualizes lightweight Vector Line Segments (0), 4-RoSy X-Cross Fields (1), Geodesic Gradients + Wavefront Ticks (2), and Covariant Vector Gradients / Divergence / Curl (3) on a mesh using fast batched GPU segments.",
               "CraneGH", "03. Vector & Direction Fields")
         {
         }
@@ -516,16 +545,16 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxF = pManager.AddGenericParameter("Vectors or Scalars", "F", "Tangent Vectors (Vector3d) or Scalar Field (double) to compute Geodesic Gradient (leave empty for Principal Curvature Cross Field)", GH_ParamAccess.list);
+            int idxF = pManager.AddGenericParameter("Vectors or Scalars", "F", "Tangent Vectors (Vector3d) or Scalar Field (double) to compute Geodesic Gradient (leave empty for Principal Curvature X-Cross Field)", GH_ParamAccess.list);
             pManager[idxF].Optional = true;
-            pManager.AddNumberParameter("Scale", "S", "Visual length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
-            pManager.AddIntegerParameter("Mode", "Mode", "0 = Vector Arrows + Magnitude, 1 = 4-RoSy Symmetric Crosses, 2 = Geodesic Gradient Arrows + Wavefront Ticks, 3 = Covariant Vector Gradient + Divergence/Curl", GH_ParamAccess.item, 0);
+            pManager.AddNumberParameter("Scale", "S", "Visual segment length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
+            pManager.AddIntegerParameter("Mode", "Mode", "0 = Vector Segments + Cross Ticks, 1 = 4-RoSy Symmetric X-Crosses, 2 = Geodesic Gradient Segments + Wavefront Ticks, 3 = Covariant Vector Gradient + Divergence/Curl", GH_ParamAccess.item, 1);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Primary Lines", "L", "Primary 3D vector arrows or U-cross lines", GH_ParamAccess.list);
-            pManager.AddLineParameter("Cross / Ortho Lines", "Crx", "Orthogonal 4-RoSy V-cross lines or iso-wavefront ticks", GH_ParamAccess.list);
+            pManager.AddLineParameter("Primary Lines", "L", "Primary 3D vector segments or U-cross lines", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross / Ortho Lines", "Crx", "Orthogonal 4-RoSy V-cross lines or iso-wavefront ticks", GH_ParamAccess.list);
             pManager.AddVectorParameter("Vector Gradient", "VG", "Covariant Vector Gradient (direction & rate of spatial change of the vector field)", GH_ParamAccess.list);
             pManager.AddNumberParameter("Divergence", "Div", "Discrete Divergence (div V) per vertex", GH_ParamAccess.list);
             pManager.AddNumberParameter("Curl / Rotor", "Curl", "Discrete Curl ((nabla x V) . N) per vertex", GH_ParamAccess.list);
@@ -542,7 +571,7 @@ namespace CraneGH.Components
             Mesh m = null;
             var rawItems = new List<object>();
             double scale = 0.75;
-            int mode = 0;
+            int mode = 1;
 
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetDataList(1, rawItems);
@@ -604,32 +633,15 @@ namespace CraneGH.Components
             base.DrawViewportWires(args);
             if (Hidden || Locked || _primaryLines.Count == 0) return;
 
+            Color cPrim = Attributes.Selected ? Color.FromArgb(255, 235, 60) : Color.FromArgb(0, 225, 255);
             Color cOrtho = Attributes.Selected ? Color.FromArgb(255, 160, 70) : Color.FromArgb(245, 95, 80);
 
-            if (_displayMode == 1)
+            // Fast batched GPU line segment rendering (no heavy 3D cone arrows)
+            args.Display.DrawLines(_primaryLines, cPrim, 2);
+            if (_secondaryLines.Count > 0)
             {
-                // 4-RoSy Crosses: draw U and V axes cleanly
-                for (int i = 0; i < _primaryLines.Count; i++)
-                {
-                    Color cU = i < _glyphColors.Count ? _glyphColors[i] : Color.FromArgb(0, 220, 255);
-                    args.Display.DrawLine(_primaryLines[i], cU, 2);
-                }
-                if (_secondaryLines.Count > 0)
-                    args.Display.DrawLines(_secondaryLines, cOrtho, 2);
-            }
-            else
-            {
-                // Modes 0, 2, 3: Draw primary arrows + secondary ticks/crosses
-                for (int i = 0; i < _primaryLines.Count; i++)
-                {
-                    Color cA = Attributes.Selected ? Color.FromArgb(255, 235, 60)
-                             : (i < _glyphColors.Count ? _glyphColors[i] : Color.FromArgb(0, 220, 255));
-                    args.Display.DrawArrow(_primaryLines[i], cA);
-                }
-                if ((_displayMode == 2 || _displayMode == 3) && _secondaryLines.Count > 0)
-                {
-                    args.Display.DrawLines(_secondaryLines, Color.FromArgb(190, 255, 255, 255), 1);
-                }
+                Color cSec = _displayMode == 1 ? cOrtho : Color.FromArgb(190, 255, 180, 90);
+                args.Display.DrawLines(_secondaryLines, cSec, _displayMode == 1 ? 2 : 1);
             }
         }
 
@@ -732,8 +744,8 @@ namespace CraneGH.Components
             base.DrawViewportWires(args);
             if (Hidden || Locked) return;
 
-            for (int i = 0; i < _guidedArrows.Count; i++)
-                args.Display.DrawArrow(_guidedArrows[i], Color.FromArgb(170, 255, 255, 255));
+            if (_guidedArrows.Count > 0)
+                args.Display.DrawLines(_guidedArrows, Color.FromArgb(170, 255, 255, 255), 1);
 
             foreach (var pl in _flowPaths)
                 args.Display.DrawPolyline(pl, Color.FromArgb(0, 255, 215), 2);
@@ -752,7 +764,7 @@ namespace CraneGH.Components
 
         public GH_VectorFamilyDiscretizer()
           : base("Vector Family Discretizer", "VecFamily",
-              "Discretizes a continuous tangent vector field on a mesh into a finite Family of Vectors (either user-supplied reference vectors or K clustered directions), grouping faces by discrete vector family and displaying color-coded arrows.",
+              "Discretizes a continuous tangent vector field on a mesh into a finite Family of Vectors (either user-supplied reference vectors or K clustered directions), grouping faces by discrete vector family and displaying lightweight segments.",
               "CraneGH", "03. Vector & Direction Fields")
         {
         }
@@ -818,7 +830,7 @@ namespace CraneGH.Components
                 if (v.Length > 1e-12)
                 {
                     Point3d c = ddg.FaceCenters[f];
-                    _familyArrows.Add(new Line(c, c + arrowLen * v));
+                    _familyArrows.Add(new Line(c - 0.5 * arrowLen * v, c + 0.5 * arrowLen * v));
                     double t = canonFam.Length > 1 ? (double)faceIds[f] / (canonFam.Length - 1) : 0.5;
                     _arrowColors.Add(DdgAlgorithms.EvaluateScientificColor(t, 3));
                 }
@@ -837,10 +849,291 @@ namespace CraneGH.Components
             base.DrawViewportWires(args);
             if (Hidden || Locked || _familyArrows.Count == 0) return;
 
-            for (int i = 0; i < _familyArrows.Count; i++)
-                args.Display.DrawArrow(_familyArrows[i], _arrowColors[i]);
+            args.Display.DrawLines(_familyArrows, Color.FromArgb(230, 255, 255, 255), 2);
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000035");
+    }
+
+    public class GH_SpiralIsoConnector : GH_Component
+    {
+        private Polyline _spiralPath;
+        private readonly List<Polyline> _isoLoops = new List<Polyline>();
+        private readonly List<Line> _crossLines = new List<Line>();
+
+        public GH_SpiralIsoConnector()
+          : base("Spiral Iso-Connector & Stripes", "SpiralIso",
+              "Extracts a single continuous Helical Spiral Iso-Path (or Fermat Spiral) and Iso-Stripe Curves from any Scalar Field, Smoothed Scalar Mesh, or Vector/Gradient Field without cutting the mesh.",
+              "CraneGH", "04. Stripes & Conformal")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("Stripes");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (or Colored Mesh from SmoothScalar)", GH_ParamAccess.item);
+            int idxS = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar Field (double), Vector/Gradient Field (Vector3d), or External Geometry (leave empty for automatic Geodesic Height)", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
+            pManager.AddNumberParameter("Step Distance", "D", "Physical step-over spacing distance (in Rhino units) between spiral turns (<= 0 for 25 automatic turns)", GH_ParamAccess.item, 0.0);
+            pManager.AddIntegerParameter("Spiral Mode", "Mode", "0 = Continuous Helical Iso-Spiral, 1 = Continuous Fermat Out-And-In Single-Track Spiral", GH_ParamAccess.item, 0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddCurveParameter("Spiral Iso-Curve", "SP", "Continuous connected spiral curve across all iso-levels on the mesh", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Iso-Stripe Curves", "C", "Individual iso-contour curves (curves only, no mesh slicing)", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross Field", "Crx", "Lightweight X-cross tangent and gradient line segments along the stripes", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Potential Scalar", "U", "Active scalar field driving the spiral iso-connection", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _spiralPath = null;
+            _isoLoops.Clear();
+            _crossLines.Clear();
+
+            Mesh m = null;
+            var rawS = new List<object>();
+            double stepDist = 0.0;
+            int mode = 0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, rawS);
+            DA.GetData(2, ref stepDist);
+            DA.GetData(3, ref mode);
+
+            var ddg = new DdgMesh(m);
+            var scalars = new List<double>();
+            var gradVecs = new List<Vector3d>();
+            var extGeo = new List<GeometryBase>();
+
+            foreach (object obj in rawS)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is double d) scalars.Add(d);
+                else if (val is int iv) scalars.Add(iv);
+                else if (val is Vector3d v) gradVecs.Add(v);
+                else if (val is GeometryBase g) extGeo.Add(g);
+            }
+
+            double[] uField;
+            if (gradVecs.Count > 0)
+            {
+                DdgAlgorithms.SmoothVectorAndGradientMultiMode(ddg, gradVecs, null, 1.0, 1, out _, out _, out uField, out _);
+            }
+            else if (extGeo.Count > 0)
+            {
+                uField = DdgAlgorithms.ComputeExternalGeometryHeatDistance(ddg, extGeo, 1.0, out _, out _, out _, out _);
+            }
+            else if (scalars.Count > 0)
+            {
+                uField = ddg.MapScalarInputToVertices(scalars);
+            }
+            else if (m.VertexColors != null && m.VertexColors.Count == m.Vertices.Count)
+            {
+                double[] rawCol = ddg.MapScalarInputToVertices(null);
+                uField = DdgAlgorithms.SmoothScalarField(ddg, rawCol, 1.2, 0.0, out _, out _);
+            }
+            else
+            {
+                uField = DdgAlgorithms.ComputeHeatDistance(ddg, new int[] { 0 }, 1.0, out _, out _);
+            }
+
+            // Compute step distance if auto
+            if (stepDist <= 1e-9)
+            {
+                BoundingBox bb = m.GetBoundingBox(false);
+                stepDist = Math.Max(ddg.MeanEdgeLength * 1.5, bb.Diagonal.Length / 28.0);
+            }
+
+            List<Polyline> loops = DdgAlgorithms.ComputeConcentricMillingToolpaths(
+                ddg,
+                uField,
+                null,
+                stepDist,
+                0.0,
+                out _,
+                out Polyline helicalSpiral,
+                out _,
+                out _,
+                out _,
+                out _);
+
+            _isoLoops.AddRange(loops);
+            if (mode == 1 && loops.Count >= 2)
+            {
+                var fermatOrder = new List<Polyline>(loops.Count);
+                for (int k = 0; k < loops.Count; k += 2)
+                    fermatOrder.Add(loops[k]);
+                int lastOdd = (loops.Count - 1) % 2 == 1 ? (loops.Count - 1) : (loops.Count - 2);
+                for (int k = lastOdd; k >= 1; k -= 2)
+                {
+                    var rev = new Polyline(loops[k]);
+                    rev.Reverse();
+                    fermatOrder.Add(rev);
+                }
+                _spiralPath = DdgAlgorithms.BuildContinuousHelicalSpiralOnMesh(m, fermatOrder);
+            }
+            else
+            {
+                _spiralPath = helicalSpiral;
+            }
+
+            DdgAlgorithms.ComputeWalkOnMesh(ddg, uField, null, 0.0, 2, 0, out Vector3d[] vGrad, out _, out _);
+            double arm = 0.45 * ddg.MeanEdgeLength;
+            int stride = Math.Max(1, ddg.VertexCount / 600);
+            for (int i = 0; i < ddg.VertexCount; i += stride)
+            {
+                Vector3d g = vGrad[i];
+                if (g.Unitize())
+                {
+                    Vector3d t = Vector3d.CrossProduct(ddg.VertexNormals[i], g);
+                    t.Unitize();
+                    Point3d p = ddg.Positions[i];
+                    _crossLines.Add(new Line(p - arm * t, p + arm * t));
+                    _crossLines.Add(new Line(p - arm * g, p + arm * g));
+                }
+            }
+
+            DA.SetData(0, _spiralPath);
+            DA.SetDataList(1, _isoLoops);
+            DA.SetDataList(2, _crossLines);
+            DA.SetDataList(3, uField);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            if (_crossLines.Count > 0)
+                args.Display.DrawLines(_crossLines, Color.FromArgb(120, 0, 215, 255), 1);
+
+            if (_spiralPath != null && _spiralPath.Count >= 2)
+                args.Display.DrawPolyline(_spiralPath, Color.FromArgb(255, 220, 40), 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000048");
+    }
+
+    public class GH_VariableDensityStripes : GH_Component
+    {
+        private readonly List<Polyline> _stripeCurves = new List<Polyline>();
+        private readonly List<Line> _xCrossSegments = new List<Line>();
+        private Mesh _stripedMesh;
+
+        public GH_VariableDensityStripes()
+          : base("Variable-Density & Cross Stripes", "VarStripes",
+              "Synthesizes periodic surface stripes and lightweight X-Cross segments driven by a Direction Field (V) and a variable Scalar Sizing Field (W) (Knöppel, Crane et al. 2015).",
+              "CraneGH", "04. Stripes & Conformal")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("Stripes");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxV = pManager.AddVectorParameter("Direction Field", "V", "Tangent direction vectors per vertex or face (leave empty for principal curvature directions)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            int idxW = pManager.AddNumberParameter("Density Scalar", "W", "Optional scalar field modulating local stripe density / frequency (leave empty for uniform spacing)", GH_ParamAccess.list);
+            pManager[idxW].Optional = true;
+            pManager.AddNumberParameter("Base Spacing", "D", "Target base physical spacing distance (in Rhino units) between stripes", GH_ParamAccess.item, 0.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddCurveParameter("Stripe Curves", "C", "Extracted variable-density stripe boundary curves on the mesh", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross Segments", "Crx", "Lightweight 4-way X-cross tangent segments aligned with the stripes", GH_ParamAccess.list);
+            pManager.AddPointParameter("Singularities", "B", "Stripe bifurcation / branch singularity points", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Striped Mesh", "SM", "Mesh colored with periodic stripe pattern", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _stripeCurves.Clear();
+            _xCrossSegments.Clear();
+            _stripedMesh = null;
+
+            Mesh m = null;
+            var inVecs = new List<Vector3d>();
+            var inWeights = new List<double>();
+            double baseDist = 0.0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, inVecs);
+            DA.GetDataList(2, inWeights);
+            DA.GetData(3, ref baseDist);
+
+            var ddg = new DdgMesh(m);
+            Vector3d[] vDir = inVecs.Count > 0
+                ? ddg.MapVectorInputToVertices(inVecs)
+                : DdgAlgorithms.ComputeOptimalDirectionField(ddg, 2, 0.75, out _, out _);
+
+            if (inWeights.Count > 0)
+            {
+                double[] density = ddg.MapScalarInputToVertices(inWeights);
+                double wMin = double.MaxValue, wMax = double.MinValue;
+                for (int i = 0; i < ddg.VertexCount; i++)
+                {
+                    if (density[i] < wMin) wMin = density[i];
+                    if (density[i] > wMax) wMax = density[i];
+                }
+                double wSpan = Math.Max(1e-9, wMax - wMin);
+                for (int i = 0; i < ddg.VertexCount; i++)
+                {
+                    double mult = 0.35 + 1.65 * ((density[i] - wMin) / wSpan);
+                    vDir[i] *= mult;
+                }
+            }
+
+            double[] wave = DdgAlgorithms.ComputeStripePatternsByDistance(
+                ddg,
+                vDir,
+                null,
+                baseDist,
+                2,
+                out List<Polyline> crvs,
+                out List<Point3d> branches);
+
+            _stripeCurves.AddRange(crvs);
+            _stripedMesh = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, wave, true);
+
+            double arm = 0.45 * ddg.MeanEdgeLength;
+            int stride = Math.Max(1, ddg.VertexCount / 700);
+            for (int i = 0; i < ddg.VertexCount; i += stride)
+            {
+                Vector3d u = vDir[i];
+                if (u.Unitize())
+                {
+                    Vector3d v = Vector3d.CrossProduct(ddg.VertexNormals[i], u);
+                    v.Unitize();
+                    Point3d p = ddg.Positions[i];
+                    _xCrossSegments.Add(new Line(p - arm * u, p + arm * u));
+                    _xCrossSegments.Add(new Line(p - arm * v, p + arm * v));
+                }
+            }
+
+            DA.SetDataList(0, _stripeCurves);
+            DA.SetDataList(1, _xCrossSegments);
+            DA.SetDataList(2, branches);
+            DA.SetData(3, _stripedMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            if (_xCrossSegments.Count > 0)
+                args.Display.DrawLines(_xCrossSegments, Color.FromArgb(140, 255, 120, 80), 1);
+
+            foreach (var pl in _stripeCurves)
+                args.Display.DrawPolyline(pl, Color.FromArgb(0, 235, 255), 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000049");
     }
 }

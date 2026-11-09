@@ -57,6 +57,8 @@ namespace CraneGH.Components
         {
         }
 
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
+
         protected override Bitmap Icon => CraneIcons.GetIcon("BFF");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -102,6 +104,8 @@ namespace CraneGH.Components
               "CraneGH", "04. Stripes & Conformal")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("Auxetics");
 
