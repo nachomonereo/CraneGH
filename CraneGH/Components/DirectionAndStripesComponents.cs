@@ -297,8 +297,8 @@ namespace CraneGH.Components
         private readonly List<Point3d> _singularities = new List<Point3d>();
 
         public GH_PrincipalCrossField()
-          : base("Principal Cross Field (X-Cross)", "CrossField",
-              "Computes a smooth 4-way symmetric Cross Field (4-RoSy) on a mesh aligned with principal curvatures and sharp feature creases, outputting U/V directions, lightweight X-Cross line segments, and singularities.",
+          : base("Cross Field (U/V & X-Cross)", "CrossField",
+              "Builds a 4-way symmetric Cross Field (U and V orthogonal tangent directions + lightweight X-Cross segments) from an Input Vector Field V (or from Principal Curvatures if V is empty).",
               "CraneGH", "03. Vector & Direction Fields")
         {
         }
@@ -310,14 +310,16 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Curvature Align", "A", "Alignment weight to principal curvatures and sharp creases (0 = globally smoothest, 1 = strictly curvature-aligned)", GH_ParamAccess.item, 0.5);
+            int idxV = pManager.AddVectorParameter("Input Field", "V", "Input tangent vector field (e.g. from SmoothField or WalkOnMesh) to decompose into U and V cross directions (leave empty for Principal Curvature Cross Field)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            pManager.AddNumberParameter("Align / Fidelity", "A", "If V is provided: 1.0 = exact U & V from input field V, <1.0 = 4-RoSy cross relaxation. If V is empty: alignment to principal curvatures (0..1)", GH_ParamAccess.item, 1.0);
             pManager.AddNumberParameter("Cross Scale", "S", "Visual scale factor for the output 3D X-cross line segments (relative to edge length)", GH_ParamAccess.item, 0.65);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddVectorParameter("U Direction", "U", "First cross tangent direction vector per vertex", GH_ParamAccess.list);
-            pManager.AddVectorParameter("V Direction", "V", "Orthogonal second cross tangent direction vector per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("U Field", "U", "Primary tangent direction vector U per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("V Field", "V", "Orthogonal second cross tangent direction vector V (N x U) per vertex", GH_ParamAccess.list);
             pManager.AddLineParameter("X-Cross Lines", "Crx", "Lightweight 4-way X-cross line segments at every vertex on the mesh", GH_ParamAccess.list);
             pManager.AddPointParameter("Singularities", "P", "Detected cross-field singularity points (3-way or 5-way quad vertices)", GH_ParamAccess.list);
         }
@@ -329,14 +331,23 @@ namespace CraneGH.Components
             _singularities.Clear();
 
             Mesh m = null;
-            double align = 0.5;
+            var inField = new List<Vector3d>();
+            double align = 1.0;
             double scale = 0.65;
             if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetData(1, ref align);
-            DA.GetData(2, ref scale);
+            DA.GetDataList(1, inField);
+            DA.GetData(2, ref align);
+            DA.GetData(3, ref scale);
 
             var ddg = new DdgMesh(m);
-            Vector3d[] uDir = DdgAlgorithms.ComputeOptimalDirectionField(ddg, 4, align, out Vector3d[] vDir, out List<Point3d> sings);
+            double effAlign = (inField.Count == 0 && Params.Input[2].SourceCount == 0) ? 0.5 : align;
+            Vector3d[] uDir = DdgAlgorithms.ComputeOptimalDirectionField(
+                ddg,
+                4,
+                effAlign,
+                out Vector3d[] vDir,
+                out List<Point3d> sings,
+                inField.Count > 0 ? inField : null);
             _singularities.AddRange(sings);
 
             double arm = 0.5 * Math.Max(0.05, scale) * ddg.MeanEdgeLength;
@@ -857,13 +868,13 @@ namespace CraneGH.Components
 
     public class GH_SpiralIsoConnector : GH_Component
     {
-        private Polyline _spiralPath;
-        private readonly List<Polyline> _isoLoops = new List<Polyline>();
+        private Curve _spiralCurve;
+        private readonly List<Curve> _isoCurves = new List<Curve>();
         private readonly List<Line> _crossLines = new List<Line>();
 
         public GH_SpiralIsoConnector()
-          : base("Spiral Iso-Connector & Stripes", "SpiralIso",
-              "Extracts a single continuous Helical Spiral Iso-Path (or Fermat Spiral) and Iso-Stripe Curves from any Scalar Field, Smoothed Scalar Mesh, or Vector/Gradient Field without cutting the mesh.",
+          : base("Smooth Spiral Iso-Curve", "SpiralIso",
+              "Dedicated component that extracts a smooth, non-polygonal Degree-3 NURBS Helical Spiral Iso-Curve (or Fermat Spiral) on a mesh from any Scalar Field, Smoothed Scalar Mesh, or Scalar Gradient.",
               "CraneGH", "04. Stripes & Conformal")
         {
         }
@@ -875,22 +886,22 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (or Colored Mesh from SmoothScalar)", GH_ParamAccess.item);
             int idxS = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar Field (double), Vector/Gradient Field (Vector3d), or External Geometry (leave empty for automatic Geodesic Height)", GH_ParamAccess.list);
             pManager[idxS].Optional = true;
-            pManager.AddNumberParameter("Step Distance", "D", "Physical step-over spacing distance (in Rhino units) between spiral turns (<= 0 for 25 automatic turns)", GH_ParamAccess.item, 0.0);
-            pManager.AddIntegerParameter("Spiral Mode", "Mode", "0 = Continuous Helical Iso-Spiral, 1 = Continuous Fermat Out-And-In Single-Track Spiral", GH_ParamAccess.item, 0);
+            pManager.AddNumberParameter("Turn Pitch / Distance", "D", "Physical step-over spacing distance (in Rhino units) between spiral turns (<= 0 for 24 automatic turns)", GH_ParamAccess.item, 0.0);
+            pManager.AddIntegerParameter("Spiral Mode", "Mode", "0 = Smooth Continuous Helical Iso-Spiral, 1 = Smooth Fermat Out-And-In Single-Track Spiral", GH_ParamAccess.item, 0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Spiral Iso-Curve", "SP", "Continuous connected spiral curve across all iso-levels on the mesh", GH_ParamAccess.item);
-            pManager.AddCurveParameter("Iso-Stripe Curves", "C", "Individual iso-contour curves (curves only, no mesh slicing)", GH_ParamAccess.list);
-            pManager.AddLineParameter("X-Cross Field", "Crx", "Lightweight X-cross tangent and gradient line segments along the stripes", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Potential Scalar", "U", "Active scalar field driving the spiral iso-connection", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Smooth Spiral Iso-Curve", "SP", "Smooth, non-polygonal Degree-3 NURBS spiral curve across the mesh", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Smooth Iso-Curves", "C", "Smooth Degree-3 NURBS iso-contour curves per turn", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross Field", "Crx", "Lightweight X-cross tangent and gradient line segments", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Potential Scalar", "U", "Active scalar field driving the spiral", GH_ParamAccess.list);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _spiralPath = null;
-            _isoLoops.Clear();
+            _spiralCurve = null;
+            _isoCurves.Clear();
             _crossLines.Clear();
 
             Mesh m = null;
@@ -921,7 +932,7 @@ namespace CraneGH.Components
             double[] uField;
             if (gradVecs.Count > 0)
             {
-                DdgAlgorithms.SmoothVectorAndGradientMultiMode(ddg, gradVecs, null, 1.0, 1, out _, out _, out uField, out _);
+                DdgAlgorithms.SmoothVectorAndGradientMultiMode(ddg, gradVecs, null, 1.5, 1, out _, out _, out uField, out _);
             }
             else if (extGeo.Count > 0)
             {
@@ -934,52 +945,21 @@ namespace CraneGH.Components
             else if (m.VertexColors != null && m.VertexColors.Count == m.Vertices.Count)
             {
                 double[] rawCol = ddg.MapScalarInputToVertices(null);
-                uField = DdgAlgorithms.SmoothScalarField(ddg, rawCol, 1.2, 0.0, out _, out _);
+                uField = DdgAlgorithms.SmoothScalarField(ddg, rawCol, 1.5, 0.0, out _, out _);
             }
             else
             {
                 uField = DdgAlgorithms.ComputeHeatDistance(ddg, new int[] { 0 }, 1.0, out _, out _);
             }
 
-            // Compute step distance if auto
-            if (stepDist <= 1e-9)
-            {
-                BoundingBox bb = m.GetBoundingBox(false);
-                stepDist = Math.Max(ddg.MeanEdgeLength * 1.5, bb.Diagonal.Length / 28.0);
-            }
-
-            List<Polyline> loops = DdgAlgorithms.ComputeConcentricMillingToolpaths(
+            _spiralCurve = DdgAlgorithms.ComputeSmoothSpiralIsoCurveOnMesh(
                 ddg,
                 uField,
-                null,
                 stepDist,
-                0.0,
-                out _,
-                out Polyline helicalSpiral,
-                out _,
-                out _,
-                out _,
-                out _);
+                mode,
+                out List<Curve> smoothIsoCrvs);
 
-            _isoLoops.AddRange(loops);
-            if (mode == 1 && loops.Count >= 2)
-            {
-                var fermatOrder = new List<Polyline>(loops.Count);
-                for (int k = 0; k < loops.Count; k += 2)
-                    fermatOrder.Add(loops[k]);
-                int lastOdd = (loops.Count - 1) % 2 == 1 ? (loops.Count - 1) : (loops.Count - 2);
-                for (int k = lastOdd; k >= 1; k -= 2)
-                {
-                    var rev = new Polyline(loops[k]);
-                    rev.Reverse();
-                    fermatOrder.Add(rev);
-                }
-                _spiralPath = DdgAlgorithms.BuildContinuousHelicalSpiralOnMesh(m, fermatOrder);
-            }
-            else
-            {
-                _spiralPath = helicalSpiral;
-            }
+            _isoCurves.AddRange(smoothIsoCrvs);
 
             DdgAlgorithms.ComputeWalkOnMesh(ddg, uField, null, 0.0, 2, 0, out Vector3d[] vGrad, out _, out _);
             double arm = 0.45 * ddg.MeanEdgeLength;
@@ -997,8 +977,8 @@ namespace CraneGH.Components
                 }
             }
 
-            DA.SetData(0, _spiralPath);
-            DA.SetDataList(1, _isoLoops);
+            DA.SetData(0, _spiralCurve);
+            DA.SetDataList(1, _isoCurves);
             DA.SetDataList(2, _crossLines);
             DA.SetDataList(3, uField);
         }
@@ -1011,8 +991,8 @@ namespace CraneGH.Components
             if (_crossLines.Count > 0)
                 args.Display.DrawLines(_crossLines, Color.FromArgb(120, 0, 215, 255), 1);
 
-            if (_spiralPath != null && _spiralPath.Count >= 2)
-                args.Display.DrawPolyline(_spiralPath, Color.FromArgb(255, 220, 40), 3);
+            if (_spiralCurve != null && _spiralCurve.IsValid)
+                args.Display.DrawCurve(_spiralCurve, Color.FromArgb(255, 220, 40), 3);
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000048");
@@ -1025,8 +1005,8 @@ namespace CraneGH.Components
         private Mesh _stripedMesh;
 
         public GH_VariableDensityStripes()
-          : base("Variable-Density & Cross Stripes", "VarStripes",
-              "Synthesizes periodic surface stripes and lightweight X-Cross segments driven by a Direction Field (V) and a variable Scalar Sizing Field (W) (Knöppel, Crane et al. 2015).",
+          : base("Scalar & Gradient Variable Stripes", "VarStripes",
+              "Generates variable-spacing stripes where high Scalar / high Scalar Gradient zones have MORE stripes (small spacing) and low Scalar zones have FEWER stripes (large spacing).",
               "CraneGH", "04. Stripes & Conformal")
         {
         }
@@ -1036,19 +1016,19 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxV = pManager.AddVectorParameter("Direction Field", "V", "Tangent direction vectors per vertex or face (leave empty for principal curvature directions)", GH_ParamAccess.list);
+            int idxS = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar Field (double) or Scalar Gradient Vectors (Vector3d): high values = MORE stripes (closer together), low values = FEWER stripes (wider apart)", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
+            int idxV = pManager.AddVectorParameter("Direction Field", "V", "Optional tangent direction vectors for stripe orientation (if empty, aligns with iso-contours of S)", GH_ParamAccess.list);
             pManager[idxV].Optional = true;
-            int idxW = pManager.AddNumberParameter("Density Scalar", "W", "Optional scalar field modulating local stripe density / frequency (leave empty for uniform spacing)", GH_ParamAccess.list);
-            pManager[idxW].Optional = true;
-            pManager.AddNumberParameter("Base Spacing", "D", "Target base physical spacing distance (in Rhino units) between stripes", GH_ParamAccess.item, 0.0);
+            pManager.AddNumberParameter("Base Spacing", "D", "Base physical spacing distance (in Rhino units) between stripes (0 = automatic)", GH_ParamAccess.item, 0.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Stripe Curves", "C", "Extracted variable-density stripe boundary curves on the mesh", GH_ParamAccess.list);
-            pManager.AddLineParameter("X-Cross Segments", "Crx", "Lightweight 4-way X-cross tangent segments aligned with the stripes", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Stripe Curves", "C", "Variable-density stripe curves (dense where S/Gradient is high, sparse where S/Gradient is low)", GH_ParamAccess.list);
+            pManager.AddLineParameter("X-Cross Segments", "Crx", "Lightweight 4-way X-cross tangent segments scaled by local stripe density", GH_ParamAccess.list);
             pManager.AddPointParameter("Singularities", "B", "Stripe bifurcation / branch singularity points", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Striped Mesh", "SM", "Mesh colored with periodic stripe pattern", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Striped Mesh", "SM", "Mesh colored with the variable-density stripe pattern", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
@@ -1058,50 +1038,177 @@ namespace CraneGH.Components
             _stripedMesh = null;
 
             Mesh m = null;
+            var rawS = new List<object>();
             var inVecs = new List<Vector3d>();
-            var inWeights = new List<double>();
             double baseDist = 0.0;
 
             if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetDataList(1, inVecs);
-            DA.GetDataList(2, inWeights);
+            DA.GetDataList(1, rawS);
+            DA.GetDataList(2, inVecs);
             DA.GetData(3, ref baseDist);
 
             var ddg = new DdgMesh(m);
-            Vector3d[] vDir = inVecs.Count > 0
-                ? ddg.MapVectorInputToVertices(inVecs)
-                : DdgAlgorithms.ComputeOptimalDirectionField(ddg, 2, 0.75, out _, out _);
+            int nV = ddg.VertexCount;
 
-            if (inWeights.Count > 0)
+            var sScalars = new List<double>();
+            var sGrads = new List<Vector3d>();
+            foreach (object obj in rawS)
             {
-                double[] density = ddg.MapScalarInputToVertices(inWeights);
-                double wMin = double.MaxValue, wMax = double.MinValue;
-                for (int i = 0; i < ddg.VertexCount; i++)
-                {
-                    if (density[i] < wMin) wMin = density[i];
-                    if (density[i] > wMax) wMax = density[i];
-                }
-                double wSpan = Math.Max(1e-9, wMax - wMin);
-                for (int i = 0; i < ddg.VertexCount; i++)
-                {
-                    double mult = 0.35 + 1.65 * ((density[i] - wMin) / wSpan);
-                    vDir[i] *= mult;
-                }
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is double d) sScalars.Add(d);
+                else if (val is int iv) sScalars.Add(iv);
+                else if (val is Vector3d v) sGrads.Add(v);
             }
 
-            double[] wave = DdgAlgorithms.ComputeStripePatternsByDistance(
-                ddg,
-                vDir,
-                null,
-                baseDist,
-                2,
-                out List<Polyline> crvs,
-                out List<Point3d> branches);
+            double[] uPotential;
+            double[] densityField = new double[nV];
 
-            _stripeCurves.AddRange(crvs);
+            if (sScalars.Count > 0)
+            {
+                uPotential = ddg.MapScalarInputToVertices(sScalars);
+                DdgAlgorithms.ComputeWalkOnMesh(ddg, uPotential, null, 0.0, 2, 0, out Vector3d[] gVec, out _, out _);
+
+                double uMin = double.MaxValue, uMax = double.MinValue;
+                double gMin = double.MaxValue, gMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (uPotential[i] < uMin) uMin = uPotential[i];
+                    if (uPotential[i] > uMax) uMax = uPotential[i];
+                    double gm = gVec[i].Length;
+                    if (gm < gMin) gMin = gm;
+                    if (gm > gMax) gMax = gm;
+                }
+                double uSpan = Math.Max(1e-12, uMax - uMin);
+                double gSpan = Math.Max(1e-12, gMax - gMin);
+
+                // Combine normalized scalar value and local gradient slope so BOTH high scalar values and steep gradient zones pack more stripes!
+                for (int i = 0; i < nV; i++)
+                {
+                    double tU = (uPotential[i] - uMin) / uSpan;
+                    double tG = (gVec[i].Length - gMin) / gSpan;
+                    densityField[i] = 0.70 * tU + 0.30 * tG;
+                }
+            }
+            else if (sGrads.Count > 0)
+            {
+                Vector3d[] mappedG = ddg.MapVectorInputToVertices(sGrads);
+                DdgAlgorithms.SmoothVectorAndGradientMultiMode(ddg, sGrads, null, 1.2, 1, out _, out _, out uPotential, out _);
+
+                double gMin = double.MaxValue, gMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    double gm = mappedG[i].Length;
+                    if (gm < gMin) gMin = gm;
+                    if (gm > gMax) gMax = gm;
+                }
+
+                if (gMax - gMin > 1e-4 * gMax)
+                {
+                    // Gradient vectors have varying magnitudes -> use ||grad u|| + integrated potential
+                    double uMin = double.MaxValue, uMax = double.MinValue;
+                    for (int i = 0; i < nV; i++)
+                    {
+                        if (uPotential[i] < uMin) uMin = uPotential[i];
+                        if (uPotential[i] > uMax) uMax = uPotential[i];
+                    }
+                    double uSpan = Math.Max(1e-12, uMax - uMin);
+                    double gSpan = Math.Max(1e-12, gMax - gMin);
+                    for (int i = 0; i < nV; i++)
+                    {
+                        double tG = (mappedG[i].Length - gMin) / gSpan;
+                        double tU = (uPotential[i] - uMin) / uSpan;
+                        densityField[i] = 0.65 * tG + 0.35 * tU;
+                    }
+                }
+                else
+                {
+                    // Unit vectors -> use integrated scalar potential uPotential
+                    for (int i = 0; i < nV; i++) densityField[i] = uPotential[i];
+                }
+            }
+            else
+            {
+                // Default: heat distance from vertex 0
+                uPotential = DdgAlgorithms.ComputeHeatDistance(ddg, new int[] { 0 }, 1.0, out _, out _);
+                for (int i = 0; i < nV; i++) densityField[i] = uPotential[i];
+            }
+
+            Vector3d[] vDir;
+            var branches = new List<Point3d>();
+            double[] wave = new double[nV];
+
+            if (inVecs.Count > 0)
+            {
+                // User supplied explicit direction field V -> run variable-wavenumber Knöppel stripes with Y-bifurcations!
+                vDir = ddg.MapVectorInputToVertices(inVecs);
+                wave = DdgAlgorithms.ComputeStripePatternsByDistance(
+                    ddg,
+                    vDir,
+                    null,
+                    baseDist,
+                    2,
+                    out List<Polyline> crvs,
+                    out branches,
+                    densityField);
+                _stripeCurves.AddRange(crvs);
+            }
+            else
+            {
+                // No separate V provided -> orient stripes along iso-contours of uPotential AND warp spacing
+                // so high scalar / high gradient zones have MANY closely-packed stripes and low zones have FEW stripes!
+                DdgAlgorithms.ComputeWalkOnMesh(ddg, uPotential, null, 0.0, 2, 0, out Vector3d[] gradU, out _, out _);
+                vDir = new Vector3d[nV];
+                for (int i = 0; i < nV; i++)
+                {
+                    Vector3d t = Vector3d.CrossProduct(ddg.VertexNormals[i], gradU[i]);
+                    vDir[i] = t.Unitize() ? t : ddg.PrincipalDir[i];
+                }
+
+                double uMin = double.MaxValue, uMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (uPotential[i] < uMin) uMin = uPotential[i];
+                    if (uPotential[i] > uMax) uMax = uPotential[i];
+                }
+                double uSpan = Math.Max(1e-12, uMax - uMin);
+
+                double spacing = baseDist > 1e-6 ? baseDist : 2.2 * ddg.MeanEdgeLength;
+                BoundingBox bb = m.GetBoundingBox(false);
+                int numStripes = Math.Max(6, Math.Min(180, (int)Math.Round(bb.Diagonal.Length / spacing)));
+
+                // Non-linear cumulative density warp Phi(t) = t^2.4:
+                // Derivative dPhi/dt = 2.4 * t^1.4 is SMALL when t is near 0 (FEW stripes, wide distance)
+                // and LARGE when t is near 1 (MANY stripes, narrow distance)!
+                double[] warpedPhase = new double[nV];
+                for (int i = 0; i < nV; i++)
+                {
+                    double t = Math.Max(0.0, Math.Min(1.0, (uPotential[i] - uMin) / uSpan));
+                    double w = Math.Pow(t, 2.35);
+                    warpedPhase[i] = w;
+                    wave[i] = Math.Cos(2.0 * Math.PI * numStripes * w);
+                }
+
+                var levels = new List<double>(numStripes);
+                for (int k = 1; k <= numStripes; k++)
+                {
+                    levels.Add(k / (double)(numStripes + 1));
+                }
+                List<Polyline> isoStripes = ddg.ExtractIsoContours(warpedPhase, levels);
+                _stripeCurves.AddRange(isoStripes);
+            }
+
             _stripedMesh = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, wave, true);
 
-            double arm = 0.45 * ddg.MeanEdgeLength;
+            double dMin = double.MaxValue, dMax = double.MinValue;
+            for (int i = 0; i < nV; i++)
+            {
+                if (densityField[i] < dMin) dMin = densityField[i];
+                if (densityField[i] > dMax) dMax = densityField[i];
+            }
+            double dSpan = Math.Max(1e-12, dMax - dMin);
+
+            double baseArm = 0.45 * ddg.MeanEdgeLength;
             int stride = Math.Max(1, ddg.VertexCount / 700);
             for (int i = 0; i < ddg.VertexCount; i += stride)
             {
@@ -1110,6 +1217,8 @@ namespace CraneGH.Components
                 {
                     Vector3d v = Vector3d.CrossProduct(ddg.VertexNormals[i], u);
                     v.Unitize();
+                    double tD = (densityField[i] - dMin) / dSpan;
+                    double arm = baseArm * (0.45 + 0.90 * tD);
                     Point3d p = ddg.Positions[i];
                     _xCrossSegments.Add(new Line(p - arm * u, p + arm * u));
                     _xCrossSegments.Add(new Line(p - arm * v, p + arm * v));

@@ -246,11 +246,10 @@ namespace CraneGH.Components
     public class GH_ExactIsoCut : GH_Component
     {
         private readonly List<Polyline> _cutCurves = new List<Polyline>();
-        private Polyline _spiralCurve;
 
         public GH_ExactIsoCut()
-          : base("Iso-Splitting Lines & Spiral", "IsoCut",
-              "Extracts fast Iso-Splitting Curves and a Continuous Spiral Curve on a mesh from any Scalar Field, Smoothed Scalar/Mesh, or Scalar Gradient (without slicing the mesh).",
+          : base("Iso-Splitting Curves", "IsoCut",
+              "Extracts fast Iso-Splitting Curves on a mesh from any Scalar Field, Smoothed Scalar/Mesh, or Scalar Gradient (without slicing the mesh).",
               "CraneGH", "02. Geodesics & Iso-Cut")
         {
         }
@@ -269,7 +268,6 @@ namespace CraneGH.Components
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddCurveParameter("Iso-Splitting Curves", "C", "Extracted iso-contour curves on the mesh (no mesh cutting overhead)", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Spiral Iso-Curve", "SP", "Continuous helical spiral curve connecting all iso-levels smoothly", GH_ParamAccess.item);
             pManager.AddNumberParameter("Resolved Scalar", "S", "Active scalar values per vertex used for the iso-lines", GH_ParamAccess.list);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the active scalar field", GH_ParamAccess.item);
         }
@@ -277,7 +275,6 @@ namespace CraneGH.Components
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             _cutCurves.Clear();
-            _spiralCurve = null;
 
             Mesh m = null;
             var rawU = new List<object>();
@@ -357,13 +354,11 @@ namespace CraneGH.Components
 
             List<Polyline> crvs = ddg.ExtractIsoContours(u, levels);
             _cutCurves.AddRange(crvs);
-            _spiralCurve = DdgAlgorithms.BuildContinuousHelicalSpiralOnMesh(ddg.RhinoMesh, crvs);
             Mesh coloredM = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, u, false);
 
             DA.SetDataList(0, crvs);
-            DA.SetData(1, _spiralCurve);
-            DA.SetDataList(2, u);
-            DA.SetData(3, coloredM);
+            DA.SetDataList(1, u);
+            DA.SetData(2, coloredM);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
@@ -374,9 +369,6 @@ namespace CraneGH.Components
             Color cCurve = Attributes.Selected ? Color.FromArgb(255, 255, 80) : Color.FromArgb(255, 210, 40);
             foreach (var pl in _cutCurves)
                 args.Display.DrawPolyline(pl, cCurve, 2);
-
-            if (_spiralCurve != null && _spiralCurve.Count >= 2)
-                args.Display.DrawPolyline(_spiralCurve, Color.FromArgb(0, 245, 210), 2);
         }
 
         public override Guid ComponentGuid => new Guid("A102B202-C302-4D02-9E02-000000000034");

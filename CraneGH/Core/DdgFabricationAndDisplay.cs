@@ -1627,7 +1627,7 @@ namespace CraneGH.Core
 
         /// <summary>
         /// Connects a sequence of ordered iso-contour loops/curves into a smooth, continuous Helical Spiral
-        /// on the mesh by ramping linearly from contour k to contour k+1 over each revolution!
+        /// on the mesh by ramping smoothly from contour k to contour k+1 over each revolution!
         /// </summary>
         public static Polyline BuildContinuousHelicalSpiralOnMesh(Mesh refMesh, IList<Polyline> orderedContours)
         {
@@ -1635,68 +1635,119 @@ namespace CraneGH.Core
             if (orderedContours == null || orderedContours.Count == 0)
                 return new Polyline();
 
-            // Filter valid contours with >= 2 points
+            // Filter valid contours with >= 3 points
             var validLoops = new List<Polyline>();
             foreach (var pl in orderedContours)
             {
-                if (pl != null && pl.Count >= 2)
+                if (pl != null && pl.Count >= 3)
                     validLoops.Add(new Polyline(pl));
             }
             if (validLoops.Count == 0) return new Polyline();
             if (validLoops.Count == 1) return validLoops[0];
 
-            int samplesPerTurn = 48;
+            int samplesPerTurn = 140;
 
-            // Helper: resample a polyline into N uniform points, cyclically shifted so index 0 is closest to refStartPt
-            Point3d[] ResampleAndAlignLoop(Polyline loop, Point3d refStartPt, Vector3d preferredTangent)
+            // Helper: smooth a raw contour polyline and resample it into N uniform points along a degree-3 NURBS curve
+            Point3d[] ResampleAndAlignLoop(Polyline rawLoop, Point3d refStartPt, Vector3d preferredTangent)
             {
-                var crv = new PolylineCurve(loop);
-                bool isClosed = loop[0].DistanceTo(loop[loop.Count - 1]) < crv.GetLength() * 0.15;
+                var work = new Polyline(rawLoop);
+                double len = work.Length;
+                bool isClosed = work[0].DistanceTo(work[work.Count - 1]) < Math.Max(len * 0.18, refMesh != null ? refMesh.GetBoundingBox(false).Diagonal.Length * 0.05 : 1e-3);
+
+                // Smooth raw polygon vertices first so triangle facet kinks are removed before curve fitting
+                int nRaw = isClosed ? work.Count - 1 : work.Count;
+                if (nRaw >= 4)
+                {
+                    Point3d[] cur = new Point3d[nRaw];
+                    Point3d[] nxt = new Point3d[nRaw];
+                    for (int i = 0; i < nRaw; i++) cur[i] = work[i];
+
+                    for (int pass = 0; pass < 4; pass++)
+                    {
+                        for (int i = 0; i < nRaw; i++)
+                        {
+                            if (!isClosed && (i == 0 || i == nRaw - 1))
+                            {
+                                nxt[i] = cur[i];
+                                continue;
+                            }
+                            Point3d prev = cur[(i - 1 + nRaw) % nRaw];
+                            Point3d next = cur[(i + 1) % nRaw];
+                            nxt[i] = 0.5 * cur[i] + 0.25 * (prev + next);
+                        }
+                        for (int i = 0; i < nRaw; i++) cur[i] = nxt[i];
+                    }
+
+                    work.Clear();
+                    for (int i = 0; i < nRaw; i++) work.Add(cur[i]);
+                    if (isClosed) work.Add(cur[0]);
+                }
+
+                Curve smoothLoopCrv = Curve.CreateInterpolatedCurve(work, 3, CurveKnotStyle.Chord);
+                if (smoothLoopCrv == null) smoothLoopCrv = new PolylineCurve(work);
 
                 Point3d[] pts = new Point3d[samplesPerTurn];
-                double[] tParams = crv.DivideByCount(samplesPerTurn - 1, true);
+                double[] tParams = smoothLoopCrv.DivideByCount(samplesPerTurn - 1, true);
                 if (tParams == null || tParams.Length < samplesPerTurn)
                 {
                     for (int i = 0; i < samplesPerTurn; i++)
-                        pts[i] = loop[Math.Min(loop.Count - 1, (i * loop.Count) / samplesPerTurn)];
+                        pts[i] = work[Math.Min(work.Count - 1, (i * work.Count) / samplesPerTurn)];
                 }
                 else
                 {
                     for (int i = 0; i < samplesPerTurn; i++)
-                        pts[i] = crv.PointAt(tParams[i]);
+                        pts[i] = smoothLoopCrv.PointAt(tParams[i]);
                 }
 
-                if (isClosed && refStartPt.IsValid)
+                if (isClosed)
                 {
-                    // Shift cyclic start index to the point closest to refStartPt
-                    int bestIdx = 0;
-                    double minD2 = double.MaxValue;
-                    for (int i = 0; i < samplesPerTurn - 1; i++)
+                    if (refStartPt.IsValid)
                     {
-                        double d2 = pts[i].DistanceToSquared(refStartPt);
-                        if (d2 < minD2) { minD2 = d2; bestIdx = i; }
+                        int bestIdx = 0;
+                        double minD2 = double.MaxValue;
+                        for (int i = 0; i < samplesPerTurn - 1; i++)
+                        {
+                            double d2 = pts[i].DistanceToSquared(refStartPt);
+                            if (d2 < minD2) { minD2 = d2; bestIdx = i; }
+                        }
+
+                        var shifted = new Point3d[samplesPerTurn];
+                        for (int i = 0; i < samplesPerTurn - 1; i++)
+                            shifted[i] = pts[(bestIdx + i) % (samplesPerTurn - 1)];
+                        shifted[samplesPerTurn - 1] = shifted[0];
+                        pts = shifted;
                     }
 
-                    var shifted = new Point3d[samplesPerTurn];
-                    for (int i = 0; i < samplesPerTurn - 1; i++)
-                        shifted[i] = pts[(bestIdx + i) % (samplesPerTurn - 1)];
-                    shifted[samplesPerTurn - 1] = shifted[0];
-                    pts = shifted;
+                    if (preferredTangent.Length > 1e-8)
+                    {
+                        Vector3d curTang = pts[Math.Min(6, samplesPerTurn - 1)] - pts[0];
+                        if ((curTang * preferredTangent) < 0.0)
+                        {
+                            Array.Reverse(pts);
+                        }
+                    }
                 }
-
-                // Ensure consistent winding direction with previous loop
-                if (preferredTangent.Length > 1e-8)
+                else
                 {
-                    Vector3d curTang = pts[Math.Min(3, samplesPerTurn - 1)] - pts[0];
-                    if ((curTang * preferredTangent) < 0.0)
-                        Array.Reverse(pts);
+                    // Open contour: orient so pts[0] is aligned with preferredTangent or closest to refStartPt
+                    if (preferredTangent.Length > 1e-8)
+                    {
+                        Vector3d curTang = pts[pts.Length - 1] - pts[0];
+                        if ((curTang * preferredTangent) < 0.0)
+                            Array.Reverse(pts);
+                    }
+                    else if (refStartPt.IsValid)
+                    {
+                        if (pts[pts.Length - 1].DistanceToSquared(refStartPt) < pts[0].DistanceToSquared(refStartPt))
+                            Array.Reverse(pts);
+                    }
                 }
 
                 return pts;
             }
 
             Point3d prevStart = validLoops[0][0];
-            Vector3d prevTang = validLoops[0].Count >= 2 ? (validLoops[0][1] - validLoops[0][0]) : Vector3d.Zero;
+            Vector3d prevTang = validLoops[0].Count >= 2 ? (validLoops[0][Math.Min(3, validLoops[0].Count - 1)] - validLoops[0][0]) : Vector3d.Zero;
 
             var resampledLoops = new List<Point3d[]>(validLoops.Count);
             for (int k = 0; k < validLoops.Count; k++)
@@ -1704,17 +1755,18 @@ namespace CraneGH.Core
                 Point3d[] aligned = ResampleAndAlignLoop(validLoops[k], prevStart, prevTang);
                 resampledLoops.Add(aligned);
                 prevStart = aligned[0];
-                prevTang = aligned[Math.Min(3, samplesPerTurn - 1)] - aligned[0];
+                prevTang = aligned[Math.Min(6, samplesPerTurn - 1)] - aligned[0];
             }
 
-            // Build helical spiral turns: on turn k, interpolate P(s) = (1 - s) * Loop_k(s) + s * Loop_{k+1}(s) projected onto refMesh!
+            double maxJump = refMesh != null ? refMesh.GetBoundingBox(false).Diagonal.Length * 0.45 : 1e9;
+
+            // Build helical spiral turns: on turn k, interpolate P(s) = (1 - s) * Loop_k(s) + s * Loop_{k+1}(s)
             for (int k = 0; k < resampledLoops.Count - 1; k++)
             {
                 Point3d[] loopA = resampledLoops[k];
                 Point3d[] loopB = resampledLoops[k + 1];
 
-                // Skip merging if loopA and loopB are on completely disconnected islands far apart
-                if (loopA[0].DistanceTo(loopB[0]) > refMesh.GetBoundingBox(false).Diagonal.Length * 0.35)
+                if (loopA[0].DistanceTo(loopB[0]) > maxJump)
                 {
                     for (int i = 0; i < samplesPerTurn; i++) spiralPts.Add(loopA[i]);
                     continue;
@@ -1723,23 +1775,163 @@ namespace CraneGH.Core
                 for (int i = 0; i < samplesPerTurn - 1; i++)
                 {
                     double s = i / (double)(samplesPerTurn - 1);
-                    // Smooth Hermite ramp for seamless C1 transition between turns
                     Point3d blended = (1.0 - s) * loopA[i] + s * loopB[i];
                     if (refMesh != null)
                     {
                         MeshPoint mp = refMesh.ClosestMeshPoint(blended, 0.0);
-                        if (mp != null) blended = mp.Point;
+                        if (mp != null)
+                        {
+                            // Soft surface attraction (70% smooth space curve, 30% flat facet) to avoid polygonal facet kinks
+                            blended = 0.35 * blended + 0.65 * mp.Point;
+                        }
                     }
-                    spiralPts.Add(blended);
+                    if (spiralPts.Count == 0 || blended.DistanceToSquared(spiralPts[spiralPts.Count - 1]) > 1e-10)
+                        spiralPts.Add(blended);
                 }
             }
 
-            // Add final loop
-            Point3d[] lastLoop = resampledLoops[resampledLoops.Count - 1];
-            for (int i = 0; i < samplesPerTurn; i++)
-                spiralPts.Add(lastLoop[i]);
+            // Smooth the final spiral point chain with 6 passes of Laplacian fairing so C1/C2 continuity is silky-smooth
+            if (spiralPts.Count >= 6)
+            {
+                Point3d[] tmp = new Point3d[spiralPts.Count];
+                for (int pass = 0; pass < 6; pass++)
+                {
+                    tmp[0] = spiralPts[0];
+                    tmp[spiralPts.Count - 1] = spiralPts[spiralPts.Count - 1];
+                    for (int i = 1; i < spiralPts.Count - 1; i++)
+                    {
+                        tmp[i] = 0.5 * spiralPts[i] + 0.25 * (spiralPts[i - 1] + spiralPts[i + 1]);
+                    }
+                    for (int i = 1; i < spiralPts.Count - 1; i++)
+                        spiralPts[i] = tmp[i];
+                }
+            }
 
             return new Polyline(spiralPts);
+        }
+
+        /// <summary>
+        /// Extracts a true smooth Degree-3 NURBS Spiral Iso-Curve on a mesh from a scalar field,
+        /// selecting one coherent primary contour per iso-level so the spiral never jumps or kinks.
+        /// </summary>
+        public static Curve ComputeSmoothSpiralIsoCurveOnMesh(
+            DdgMesh mesh,
+            double[] scalarField,
+            double stepDistance,
+            int spiralMode,
+            out List<Curve> smoothIsoCurves)
+        {
+            smoothIsoCurves = new List<Curve>();
+            int nV = mesh.VertexCount;
+
+            // 1. Lightly polish the scalar field so triangle-level noise doesn't wiggle the spiral
+            double[] uSmooth = SmoothScalarField(mesh, scalarField, 0.8, 0.0, out _, out _);
+
+            double uMin = double.MaxValue, uMax = double.MinValue;
+            for (int i = 0; i < nV; i++)
+            {
+                if (uSmooth[i] < uMin) uMin = uSmooth[i];
+                if (uSmooth[i] > uMax) uMax = uSmooth[i];
+            }
+            double uSpan = Math.Max(1e-9, uMax - uMin);
+
+            int numTurns;
+            if (stepDistance > 1e-6)
+            {
+                BoundingBox bb = mesh.RhinoMesh.GetBoundingBox(false);
+                numTurns = Math.Max(4, Math.Min(120, (int)Math.Round(bb.Diagonal.Length / stepDistance)));
+            }
+            else
+            {
+                numTurns = 24;
+            }
+
+            // 2. Extract 1 primary (longest / most coherent) contour loop per iso-level
+            var orderedPrimaryLoops = new List<Polyline>(numTurns);
+            Point3d prevCentroid = Point3d.Unset;
+
+            for (int k = 0; k < numTurns; k++)
+            {
+                double t = (k + 0.5) / numTurns;
+                double isoVal = uMin + t * uSpan;
+                List<Polyline> levelLoops = mesh.ExtractIsoContours(uSmooth, new double[] { isoVal });
+                if (levelLoops == null || levelLoops.Count == 0) continue;
+
+                // Pick the best contour at this iso-level (longest, weighted by proximity to previous turn)
+                Polyline bestPl = null;
+                double bestScore = -1.0;
+                foreach (var pl in levelLoops)
+                {
+                    if (pl == null || pl.Count < 3) continue;
+                    double l = pl.Length;
+                    if (l < mesh.MeanEdgeLength * 0.5) continue;
+
+                    double score = l;
+                    if (prevCentroid.IsValid)
+                    {
+                        Point3d c = pl.CenterPoint();
+                        double d = c.DistanceTo(prevCentroid);
+                        score = l / (1.0 + 0.25 * d / Math.Max(1e-6, mesh.MeanEdgeLength));
+                    }
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestPl = pl;
+                    }
+                }
+
+                if (bestPl != null)
+                {
+                    orderedPrimaryLoops.Add(bestPl);
+                    prevCentroid = bestPl.CenterPoint();
+
+                    // Also build a smooth degree-3 NURBS curve for the individual iso-curves output
+                    Curve cIso = Curve.CreateInterpolatedCurve(bestPl, 3, CurveKnotStyle.Chord);
+                    smoothIsoCurves.Add(cIso ?? new PolylineCurve(bestPl));
+                }
+            }
+
+            if (orderedPrimaryLoops.Count == 0)
+                return new PolylineCurve();
+
+            // 3. If Fermat Mode (1), interleave even turns inward and odd turns outward
+            List<Polyline> sequenceToConnect = orderedPrimaryLoops;
+            if (spiralMode == 1 && orderedPrimaryLoops.Count >= 2)
+            {
+                sequenceToConnect = new List<Polyline>(orderedPrimaryLoops.Count);
+                for (int k = 0; k < orderedPrimaryLoops.Count; k += 2)
+                    sequenceToConnect.Add(orderedPrimaryLoops[k]);
+                int lastOdd = (orderedPrimaryLoops.Count - 1) % 2 == 1
+                    ? (orderedPrimaryLoops.Count - 1)
+                    : (orderedPrimaryLoops.Count - 2);
+                for (int k = lastOdd; k >= 1; k -= 2)
+                {
+                    var rev = new Polyline(orderedPrimaryLoops[k]);
+                    rev.Reverse();
+                    sequenceToConnect.Add(rev);
+                }
+            }
+
+            // 4. Build dense faired helical point sequence and convert to a smooth Degree-3 NURBS Curve!
+            Polyline denseSpiralPl = BuildContinuousHelicalSpiralOnMesh(mesh.RhinoMesh, sequenceToConnect);
+            if (denseSpiralPl == null || denseSpiralPl.Count < 2)
+                return new PolylineCurve();
+
+            // Subsample slightly (every 2nd point) so Degree-3 NURBS interpolation is ultra-smooth without overfitting
+            var controlPts = new List<Point3d>(denseSpiralPl.Count / 2 + 2);
+            for (int i = 0; i < denseSpiralPl.Count; i += 2)
+                controlPts.Add(denseSpiralPl[i]);
+            if (controlPts[controlPts.Count - 1].DistanceToSquared(denseSpiralPl[denseSpiralPl.Count - 1]) > 1e-10)
+                controlPts.Add(denseSpiralPl[denseSpiralPl.Count - 1]);
+
+            if (controlPts.Count >= 4)
+            {
+                Curve nurbsSpiral = Curve.CreateInterpolatedCurve(controlPts, 3, CurveKnotStyle.Chord);
+                if (nurbsSpiral != null)
+                    return nurbsSpiral;
+            }
+
+            return new PolylineCurve(denseSpiralPl);
         }
 
         // =========================================================================================

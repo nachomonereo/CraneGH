@@ -227,7 +227,6 @@ namespace CraneGH.Components
         {
             pManager.AddCurveParameter("Surface Iso-Paths", "CP", "Concentric iso-paths on the mesh separated by exact Distance D", GH_ParamAccess.list);
             pManager.AddCurveParameter("Offset Toolpaths", "TP", "3D offset toolpaths computed on the Rolling-Sphere Offset Geometry", GH_ParamAccess.list);
-            pManager.AddCurveParameter("Spiral Iso-Path", "SP", "Continuous helical spiral toolpath connecting all passes smoothly", GH_ParamAccess.item);
             pManager.AddPlaneParameter("Smooth CNC / Print Planes", "F", "Collision-tilted, smoothed 5/6-Axis Planes without drastic turns", GH_ParamAccess.list);
             pManager.AddMeshParameter("Rolling-Sphere OffsetGeo", "OffsetGeo", "Collision-free Rolling-Sphere Offset Mesh used for the milling toolpath offset", GH_ParamAccess.item);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the driving scalar or gradient field", GH_ParamAccess.item);
@@ -284,7 +283,7 @@ namespace CraneGH.Components
                 stepover,
                 toolR,
                 out List<Polyline> toolCenterPaths,
-                out Polyline spiralPath,
+                out _,
                 out List<Plane> rawFrames,
                 out _,
                 out Mesh coloredM,
@@ -300,10 +299,9 @@ namespace CraneGH.Components
 
             DA.SetDataList(0, contactPaths);
             DA.SetDataList(1, toolCenterPaths);
-            DA.SetData(2, spiralPath);
-            DA.SetDataList(3, smoothFrames);
-            DA.SetData(4, rollingOffsetGeo);
-            DA.SetData(5, coloredM);
+            DA.SetDataList(2, smoothFrames);
+            DA.SetData(3, rollingOffsetGeo);
+            DA.SetData(4, coloredM);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)

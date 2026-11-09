@@ -218,88 +218,110 @@ namespace CraneGH.Core
             int symmetryDegree,
             double curvatureAlignment,
             out Vector3d[] orthoField,
-            out List<Point3d> singularities)
+            out List<Point3d> singularities,
+            IList<Vector3d> inputReferenceField = null)
         {
             int n = mesh.VertexCount;
             int kSym = Math.Max(1, symmetryDegree);
 
-            var builder = new SparseMatrixBuilder(2 * n, 2 * n);
-            foreach (var e in mesh.Edges)
-            {
-                int i = e.V0;
-                int j = e.V1;
-                double w = e.CotanWeight;
-
-                double thetaI = FindHalfEdgeAngle(mesh, i, j);
-                double thetaJ = FindHalfEdgeAngle(mesh, j, i);
-                double phi = kSym * (thetaI - thetaJ + Math.PI);
-                double cosP = Math.Cos(phi);
-                double sinP = Math.Sin(phi);
-
-                builder.Add(2 * i, 2 * i, w);
-                builder.Add(2 * i + 1, 2 * i + 1, w);
-                builder.Add(2 * j, 2 * j, w);
-                builder.Add(2 * j + 1, 2 * j + 1, w);
-
-                builder.Add(2 * i, 2 * j, -w * cosP);
-                builder.Add(2 * i, 2 * j + 1, w * sinP);
-                builder.Add(2 * i + 1, 2 * j, -w * sinP);
-                builder.Add(2 * i + 1, 2 * j + 1, -w * cosP);
-
-                builder.Add(2 * j, 2 * i, -w * cosP);
-                builder.Add(2 * j, 2 * i + 1, -w * sinP);
-                builder.Add(2 * j + 1, 2 * i, w * sinP);
-                builder.Add(2 * j + 1, 2 * i + 1, -w * cosP);
-            }
-
-            builder.ShiftDiagonal(1e-4);
-
-            double[] solution;
-            if (curvatureAlignment > 1e-4)
-            {
-                double alpha = curvatureAlignment;
-                double[] rhs = new double[2 * n];
-                for (int i = 0; i < n; i++)
-                {
-                    double mass = mesh.DualAreas[i];
-                    builder.Add(2 * i, 2 * i, alpha * mass);
-                    builder.Add(2 * i + 1, 2 * i + 1, alpha * mass);
-
-                    Vector3d pDir = mesh.PrincipalDir[i];
-                    double px = pDir * mesh.TangentBasisX[i];
-                    double py = pDir * mesh.TangentBasisY[i];
-                    double ang = Math.Atan2(py, px) * kSym;
-                    double mag = Math.Abs(mesh.MeanCurvature[i]) + 1e-3;
-                    rhs[2 * i] = alpha * mass * mag * Math.Cos(ang);
-                    rhs[2 * i + 1] = alpha * mass * mag * Math.Sin(ang);
-                }
-                CsrMatrix A = builder.Build();
-                solution = SparseLinearSolver.SolvePCG(A, rhs, 1000, 1e-7);
-            }
-            else
-            {
-                double[] massDiag = new double[2 * n];
-                for (int i = 0; i < n; i++)
-                {
-                    massDiag[2 * i] = mesh.DualAreas[i];
-                    massDiag[2 * i + 1] = mesh.DualAreas[i];
-                }
-                CsrMatrix A = builder.Build();
-                solution = SparseLinearSolver.SmallestEigenvector(A, massDiag, 12, 500);
-            }
+            Vector3d[] customRef = (inputReferenceField != null && inputReferenceField.Count > 0)
+                ? mesh.MapVectorInputToVertices(inputReferenceField)
+                : null;
 
             Vector3d[] field = new Vector3d[n];
             orthoField = new Vector3d[n];
             double[] rootAngles = new double[n];
 
-            for (int i = 0; i < n; i++)
+            // If user supplied an input vector field and wants direct U/V cross decomposition (or curvatureAlignment >= 0.99)
+            if (customRef != null && curvatureAlignment >= 0.99)
             {
-                double re = solution[2 * i];
-                double im = solution[2 * i + 1];
-                double ang = Math.Atan2(im, re) / kSym;
-                rootAngles[i] = ang;
-                field[i] = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
-                orthoField[i] = -Math.Sin(ang) * mesh.TangentBasisX[i] + Math.Cos(ang) * mesh.TangentBasisY[i];
+                for (int i = 0; i < n; i++)
+                {
+                    Vector3d v = customRef[i];
+                    double px = v * mesh.TangentBasisX[i];
+                    double py = v * mesh.TangentBasisY[i];
+                    double ang = (Math.Abs(px) + Math.Abs(py) > 1e-12) ? Math.Atan2(py, px) : 0.0;
+                    rootAngles[i] = ang;
+                    field[i] = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
+                    orthoField[i] = -Math.Sin(ang) * mesh.TangentBasisX[i] + Math.Cos(ang) * mesh.TangentBasisY[i];
+                }
+            }
+            else
+            {
+                var builder = new SparseMatrixBuilder(2 * n, 2 * n);
+                foreach (var e in mesh.Edges)
+                {
+                    int i = e.V0;
+                    int j = e.V1;
+                    double w = e.CotanWeight;
+
+                    double thetaI = FindHalfEdgeAngle(mesh, i, j);
+                    double thetaJ = FindHalfEdgeAngle(mesh, j, i);
+                    double phi = kSym * (thetaI - thetaJ + Math.PI);
+                    double cosP = Math.Cos(phi);
+                    double sinP = Math.Sin(phi);
+
+                    builder.Add(2 * i, 2 * i, w);
+                    builder.Add(2 * i + 1, 2 * i + 1, w);
+                    builder.Add(2 * j, 2 * j, w);
+                    builder.Add(2 * j + 1, 2 * j + 1, w);
+
+                    builder.Add(2 * i, 2 * j, -w * cosP);
+                    builder.Add(2 * i, 2 * j + 1, w * sinP);
+                    builder.Add(2 * i + 1, 2 * j, -w * sinP);
+                    builder.Add(2 * i + 1, 2 * j + 1, -w * cosP);
+
+                    builder.Add(2 * j, 2 * i, -w * cosP);
+                    builder.Add(2 * j, 2 * i + 1, -w * sinP);
+                    builder.Add(2 * j + 1, 2 * i, w * sinP);
+                    builder.Add(2 * j + 1, 2 * i + 1, -w * cosP);
+                }
+
+                builder.ShiftDiagonal(1e-4);
+
+                double[] solution;
+                if (customRef != null || curvatureAlignment > 1e-4)
+                {
+                    double alpha = customRef != null ? Math.Max(0.25, curvatureAlignment * 5.0) : curvatureAlignment;
+                    double[] rhs = new double[2 * n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        double mass = mesh.DualAreas[i];
+                        builder.Add(2 * i, 2 * i, alpha * mass);
+                        builder.Add(2 * i + 1, 2 * i + 1, alpha * mass);
+
+                        Vector3d pDir = customRef != null ? customRef[i] : mesh.PrincipalDir[i];
+                        double px = pDir * mesh.TangentBasisX[i];
+                        double py = pDir * mesh.TangentBasisY[i];
+                        double ang = Math.Atan2(py, px) * kSym;
+                        double mag = customRef != null ? Math.Max(0.1, pDir.Length) : (Math.Abs(mesh.MeanCurvature[i]) + 1e-3);
+                        rhs[2 * i] = alpha * mass * mag * Math.Cos(ang);
+                        rhs[2 * i + 1] = alpha * mass * mag * Math.Sin(ang);
+                    }
+                    CsrMatrix A = builder.Build();
+                    solution = SparseLinearSolver.SolvePCG(A, rhs, 1000, 1e-7);
+                }
+                else
+                {
+                    double[] massDiag = new double[2 * n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        massDiag[2 * i] = mesh.DualAreas[i];
+                        massDiag[2 * i + 1] = mesh.DualAreas[i];
+                    }
+                    CsrMatrix A = builder.Build();
+                    solution = SparseLinearSolver.SmallestEigenvector(A, massDiag, 12, 500);
+                }
+
+                for (int i = 0; i < n; i++)
+                {
+                    double re = solution[2 * i];
+                    double im = solution[2 * i + 1];
+                    double ang = Math.Atan2(im, re) / kSym;
+                    rootAngles[i] = ang;
+                    field[i] = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
+                    orthoField[i] = -Math.Sin(ang) * mesh.TangentBasisX[i] + Math.Cos(ang) * mesh.TangentBasisY[i];
+                }
             }
 
             singularities = new List<Point3d>();
@@ -446,12 +468,42 @@ namespace CraneGH.Core
             double stripeSpacingDistance,
             int symmetryDegree,
             out List<Polyline> equidistantStripeCurves,
-            out List<Point3d> branchPoints)
+            out List<Point3d> branchPoints,
+            IList<double> optionalDensityScalar = null)
         {
             int nV = mesh.VertexCount;
             double spacing = stripeSpacingDistance > 1e-6 ? stripeSpacingDistance : 2.5 * mesh.MeanEdgeLength;
-            // Angular wavenumber lambda in radians per Rhino unit so 1 period (2*pi) = spacing
+            // Base angular wavenumber lambda in radians per Rhino unit so 1 period (2*pi) = spacing
             double lambda = (2.0 * Math.PI) / spacing;
+
+            // Per-vertex local wavenumber lambda_i:
+            // Where scalar / gradient is HIGH -> higher frequency (smaller distance between stripes, MORE stripes!)
+            // Where scalar / gradient is LOW  -> lower frequency (larger distance between stripes, FEWER stripes!)
+            double[] vertexLambda = new double[nV];
+            if (optionalDensityScalar != null && optionalDensityScalar.Count > 0)
+            {
+                double[] dMap = mesh.MapScalarInputToVertices(optionalDensityScalar);
+                double dMin = double.MaxValue, dMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (dMap[i] < dMin) dMin = dMap[i];
+                    if (dMap[i] > dMax) dMax = dMap[i];
+                }
+                double dSpan = dMax - dMin;
+                for (int i = 0; i < nV; i++)
+                {
+                    double t = dSpan > 1e-12 ? Math.Max(0.0, Math.Min(1.0, (dMap[i] - dMin) / dSpan)) : 0.5;
+                    // Smooth contrast curve: t=0 (low scalar/gradient) -> 0.20*lambda (5x wider spacing, few stripes)
+                    //                        t=1 (high scalar/gradient) -> 2.80*lambda (2.8x denser spacing, many stripes)
+                    double mult = 0.20 + 2.60 * Math.Pow(t, 1.15);
+                    vertexLambda[i] = lambda * mult;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < nV; i++)
+                    vertexLambda[i] = lambda;
+            }
 
             // 1. Determine tangent direction field phiDir[v]
             var pinnedPhaseVertices = new HashSet<int>();
@@ -541,7 +593,7 @@ namespace CraneGH.Core
                 double phiI = phiDir[vi];
                 double phiJ = s > 0.0 ? phiDir[vj] : WrapPi(phiDir[vj] + Math.PI);
 
-                double omegaIJ = lambda * 0.5 * e.Length * (Math.Cos(phiI - thetaI) + Math.Cos(phiJ - thetaJ));
+                double omegaIJ = 0.5 * e.Length * (vertexLambda[vi] * Math.Cos(phiI - thetaI) + vertexLambda[vj] * Math.Cos(phiJ - thetaJ));
                 edgeOmega[e.Index] = omegaIJ;
 
                 double a = w * Math.Cos(omegaIJ);
@@ -589,6 +641,84 @@ namespace CraneGH.Core
                     rhs[2 * pv + 1] = 0.0;
                 }
                 groundState = SparseLinearSolver.SolvePCG(builder.Build(), rhs, 1200, 1e-7);
+            }
+            else if (optionalDensityScalar != null && optionalDensityScalar.Count > 0)
+            {
+                // Prevent eigenvector localization in low-frequency regions when frequency lambda_i varies spatially!
+                // 1. Initialize unit-norm complex wave psi^(0) via BFS phase integration of edgeOmega from peak density vertex
+                int seedV = 0;
+                double maxLam = -1.0;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (vertexLambda[i] > maxLam) { maxLam = vertexLambda[i]; seedV = i; }
+                }
+
+                double[] psiInit = new double[2 * nV];
+                bool[] visited = new bool[nV];
+                var queue = new Queue<int>();
+
+                for (int startV = 0; startV < nV; startV++)
+                {
+                    int root = (startV == 0) ? seedV : (startV - 1);
+                    if (visited[root]) continue;
+                    visited[root] = true;
+                    psiInit[2 * root] = 1.0;
+                    psiInit[2 * root + 1] = 0.0;
+                    queue.Enqueue(root);
+
+                    while (queue.Count > 0)
+                    {
+                        int u = queue.Dequeue();
+                        double reU = psiInit[2 * u];
+                        double imU = psiInit[2 * u + 1];
+
+                        foreach (int heIdx in mesh.VertexOutgoingHalfEdges[u])
+                        {
+                            var he = mesh.HalfEdges[heIdx];
+                            int v = he.TargetVertex;
+                            if (visited[v]) continue;
+                            visited[v] = true;
+
+                            var e = mesh.Edges[he.EdgeIndex];
+                            double sign = (e.V0 == u) ? 1.0 : -1.0;
+                            double om = sign * edgeOmega[e.Index];
+                            double cosO = Math.Cos(om), sinO = Math.Sin(om);
+
+                            double srcIm = edgeCrossesSheets[e.Index] ? -imU : imU;
+                            psiInit[2 * v] = cosO * reU - sinO * srcIm;
+                            psiInit[2 * v + 1] = sinO * reU + cosO * srcIm;
+                            queue.Enqueue(v);
+                        }
+                    }
+                }
+
+                // 2. Two passes of screened connection relaxation (A + gamma * I) psi = gamma * psiInit
+                //    so phase wraps smoothly into Y-bifurcations while preserving local density everywhere!
+                const double gamma = 0.45;
+                for (int i = 0; i < nV; i++)
+                {
+                    builder.Add(2 * i, 2 * i, gamma);
+                    builder.Add(2 * i + 1, 2 * i + 1, gamma);
+                }
+                CsrMatrix A_screen = builder.Build();
+
+                groundState = psiInit;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    double[] rhs = new double[2 * nV];
+                    for (int i = 0; i < nV; i++)
+                    {
+                        rhs[2 * i] = gamma * groundState[2 * i];
+                        rhs[2 * i + 1] = gamma * groundState[2 * i + 1];
+                    }
+                    groundState = SparseLinearSolver.SolvePCG(A_screen, rhs, 600, 1e-6);
+                    for (int i = 0; i < nV; i++)
+                    {
+                        double re = groundState[2 * i], im = groundState[2 * i + 1];
+                        double len = Math.Sqrt(re * re + im * im);
+                        if (len > 1e-12) { groundState[2 * i] = re / len; groundState[2 * i + 1] = im / len; }
+                    }
+                }
             }
             else
             {
