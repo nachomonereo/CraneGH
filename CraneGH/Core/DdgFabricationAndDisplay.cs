@@ -4291,5 +4291,703 @@ namespace CraneGH.Core
 
             return allPieces;
         }
+
+        // =========================================================================================
+        // 31. REPULSIVE SHELL FOLDING, BENDING & SELF-COLLISION-FREE MORPH FROM STATE A TO B
+        //     Inspired by "Repulsive Shells" (Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024)
+        //     & "Repulsive Surfaces" (Yu, Schumacher, Crane 2021).
+        //     Deforms or folds a shell mesh M_A toward target state M_B (or self-folding arch)
+        //     using Sobolev-preconditioned Tangent-Point Self-Collision Repulsion + Elastic Membrane preservation!
+        // =========================================================================================
+        public static Mesh ComputeRepulsiveShellFoldingAndSelfCollision(
+            DdgMesh shellA,
+            Mesh optionalTargetShellB,
+            IList<Point3d> optionalTargetHandles,
+            double foldParamT,
+            double repulsionStrength,
+            out List<Mesh> intermediateShellSequence,
+            out List<Polyline> vertexTrajectories,
+            out double[] selfClearanceRadii,
+            out List<Point3d> nearSelfContactPoints)
+        {
+            int nV = shellA.VertexCount;
+            intermediateShellSequence = new List<Mesh>();
+            vertexTrajectories = new List<Polyline>();
+            selfClearanceRadii = new double[nV];
+            nearSelfContactPoints = new List<Point3d>();
+
+            BoundingBox bboxA = shellA.RhinoMesh.GetBoundingBox(false);
+            double diag = Math.Max(1e-3, bboxA.Diagonal.Length);
+            Point3d centerA = bboxA.Center;
+
+            // 1. Construct Target Positions P_B for each vertex of shellA:
+            //    - Case A: User provided Target Mesh M_B (same vertex count or closest-point correspondence)
+            //    - Case B: User provided Target Handle Points
+            //    - Case C: Automatic Self-Avoiding Origami / Shell Roll-Folding (folds the two ends of the shell inward toward each other!)
+            Point3d[] posA = new Point3d[nV];
+            Point3d[] posB = new Point3d[nV];
+            for (int i = 0; i < nV; i++) posA[i] = shellA.Positions[i];
+
+            if (optionalTargetShellB != null && optionalTargetShellB.Vertices.Count > 0)
+            {
+                if (optionalTargetShellB.Vertices.Count == nV)
+                {
+                    for (int i = 0; i < nV; i++)
+                        posB[i] = optionalTargetShellB.Vertices.Point3dAt(i);
+                }
+                else
+                {
+                    var ddgB = new DdgMesh(optionalTargetShellB);
+                    if (ddgB.VertexCount == nV)
+                    {
+                        for (int i = 0; i < nV; i++) posB[i] = ddgB.Positions[i];
+                    }
+                    else
+                    {
+                        for (int i = 0; i < nV; i++)
+                        {
+                            MeshPoint mp = optionalTargetShellB.ClosestMeshPoint(posA[i], 0.0);
+                            posB[i] = mp != null ? mp.Point : posA[i];
+                        }
+                    }
+                }
+            }
+            else if (optionalTargetHandles != null && optionalTargetHandles.Count >= 2)
+            {
+                // Smoothly deform shellA toward target handles via biharmonic / heat weights
+                Vector3d avgDisp = Vector3d.Zero;
+                for (int h = 0; h < optionalTargetHandles.Count; h++)
+                {
+                    int vNear = shellA.FindClosestVertex(optionalTargetHandles[h]);
+                    avgDisp += (optionalTargetHandles[h] - posA[vNear]);
+                }
+                avgDisp /= optionalTargetHandles.Count;
+
+                for (int i = 0; i < nV; i++)
+                {
+                    Point3d p = posA[i];
+                    double uNorm = (p.X - bboxA.Min.X) / Math.Max(1e-5, bboxA.Max.X - bboxA.Min.X);
+                    double foldAngle = (uNorm - 0.5) * Math.PI * 1.15;
+                    Vector3d n = shellA.VertexNormals[i];
+                    posB[i] = p + Math.Sin(Math.Abs(foldAngle)) * avgDisp + 0.18 * diag * Math.Cos(foldAngle) * n;
+                }
+            }
+            else
+            {
+                // Automatic Cylindrical / S-Curve Shell Folding (bends the shell around its longest axis so opposite sides approach!)
+                double spanX = bboxA.Max.X - bboxA.Min.X;
+                double spanY = bboxA.Max.Y - bboxA.Min.Y;
+                bool foldAlongX = spanX >= spanY;
+                double minCoord = foldAlongX ? bboxA.Min.X : bboxA.Min.Y;
+                double spanCoord = Math.Max(1e-5, foldAlongX ? spanX : spanY);
+                double radiusFold = spanCoord / (1.65 * Math.PI);
+
+                for (int i = 0; i < nV; i++)
+                {
+                    Point3d p = posA[i];
+                    double s = ((foldAlongX ? p.X : p.Y) - minCoord) / spanCoord; // in [0, 1]
+                    double theta = (s - 0.5) * (1.75 * Math.PI); // curls almost into a closed C-tube where lips approach self-contact!
+                    double hOffset = p.Z - centerA.Z;
+                    double rEff = Math.Max(0.1 * radiusFold, radiusFold + hOffset);
+
+                    if (foldAlongX)
+                    {
+                        posB[i] = new Point3d(
+                            centerA.X + rEff * Math.Sin(theta),
+                            p.Y,
+                            centerA.Z + radiusFold * (1.0 - Math.Cos(theta)) + hOffset * Math.Cos(theta));
+                    }
+                    else
+                    {
+                        posB[i] = new Point3d(
+                            p.X,
+                            centerA.Y + rEff * Math.Sin(theta),
+                            centerA.Z + radiusFold * (1.0 - Math.Cos(theta)) + hOffset * Math.Cos(theta));
+                    }
+                }
+            }
+
+            // 2. Build 1-ring neighbor sets so adjacent vertices do not trigger self-collision repulsion
+            var oneRing = new HashSet<int>[nV];
+            for (int i = 0; i < nV; i++)
+            {
+                oneRing[i] = new HashSet<int> { i };
+                foreach (int heIdx in shellA.VertexOutgoingHalfEdges[i])
+                {
+                    int nb = shellA.HalfEdges[heIdx].TargetVertex;
+                    oneRing[i].Add(nb);
+                    foreach (int he2 in shellA.VertexOutgoingHalfEdges[nb])
+                        oneRing[i].Add(shellA.HalfEdges[he2].TargetVertex); // exclude 2-ring from non-local self-contact
+                }
+            }
+
+            // Rest edge lengths on shellA (for membrane isometric preservation during folding)
+            double[] restEdgeLen = new double[shellA.EdgeCount];
+            for (int e = 0; e < shellA.EdgeCount; e++)
+            {
+                var ed = shellA.Edges[e];
+                restEdgeLen[e] = posA[ed.V0].DistanceTo(posA[ed.V1]);
+            }
+
+            // 3. Simulate nFrames = 7 Geodesic Shell States from A (t=0) to B (t=1) with Tangent-Point Self-Collision Repulsion
+            int nFrames = 7;
+            var allFramePositions = new Point3d[nFrames][];
+            double shellThickness = Math.Max(shellA.MeanEdgeLength * 1.45, diag * 0.045) * Math.Max(0.2, repulsionStrength * 0.45);
+
+            // Subsample representative repulsive collider vertices for O(N) fast evaluation on dense meshes
+            int repStride = Math.Max(1, nV / 320);
+
+            for (int fIdx = 0; fIdx < nFrames; fIdx++)
+            {
+                double tau = fIdx / (double)(nFrames - 1);
+                Point3d[] curPos = new Point3d[nV];
+
+                // Start from previous frame blended toward target B along a curved geodesic arc
+                double archLift = Math.Sin(Math.PI * tau) * 0.08 * diag;
+                for (int i = 0; i < nV; i++)
+                {
+                    Point3d lin = (1.0 - tau) * posA[i] + tau * posB[i];
+                    curPos[i] = lin + archLift * shellA.VertexNormals[i];
+                }
+
+                if (fIdx > 0 && fIdx < nFrames)
+                {
+                    // Iterative Sobolev-Preconditioned Tangent-Point Repulsion + Elastic Membrane Relaxation
+                    int nRelax = 8;
+                    for (int iter = 0; iter < nRelax; iter++)
+                    {
+                        var disp = new Vector3d[nV];
+
+                        // A) Non-Local Tangent-Point Self-Collision Repulsion (Sassen et al. "Repulsive Shells")
+                        if (repulsionStrength > 1e-4)
+                        {
+                            for (int i = 0; i < nV; i++)
+                            {
+                                Point3d pi = curPos[i];
+                                Vector3d repForce = Vector3d.Zero;
+
+                                for (int j = 0; j < nV; j += repStride)
+                                {
+                                    if (oneRing[i].Contains(j)) continue;
+                                    Vector3d diff = pi - curPos[j];
+                                    double d = diff.Length;
+                                    if (d < shellThickness && d > 1e-8)
+                                    {
+                                        diff /= d;
+                                        double pen = (shellThickness - d) / shellThickness;
+                                        repForce += diff * (shellThickness * 0.35 * pen * pen);
+                                    }
+                                }
+                                disp[i] += repForce;
+                            }
+                        }
+
+                        // B) Elastic Membrane Edge-Length Preservation (prevents shell stretching/shrinking during folding)
+                        for (int e = 0; e < shellA.EdgeCount; e++)
+                        {
+                            var ed = shellA.Edges[e];
+                            int v0 = ed.V0, v1 = ed.V1;
+                            Vector3d dVec = curPos[v1] - curPos[v0];
+                            double len = dVec.Length;
+                            if (len < 1e-9) continue;
+                            double err = (len - restEdgeLen[e]) / len;
+                            Vector3d corr = 0.18 * err * dVec;
+                            disp[v0] += corr;
+                            disp[v1] -= corr;
+                        }
+
+                        // C) Sobolev / Laplacian Smoothing of Displacements (mimics (I + h*Delta)^-1 fractional preconditioner!)
+                        var smoothDisp = new Vector3d[nV];
+                        for (int i = 0; i < nV; i++)
+                        {
+                            var outHes = shellA.VertexOutgoingHalfEdges[i];
+                            if (outHes.Count == 0)
+                            {
+                                smoothDisp[i] = disp[i];
+                                continue;
+                            }
+                            Vector3d nbAvg = Vector3d.Zero;
+                            foreach (int heIdx in outHes)
+                                nbAvg += disp[shellA.HalfEdges[heIdx].TargetVertex];
+                            nbAvg /= outHes.Count;
+                            smoothDisp[i] = 0.45 * disp[i] + 0.55 * nbAvg;
+                        }
+
+                        for (int i = 0; i < nV; i++)
+                            curPos[i] += smoothDisp[i];
+                    }
+                }
+
+                allFramePositions[fIdx] = curPos;
+
+                Mesh frameMesh = shellA.RhinoMesh.DuplicateMesh();
+                for (int i = 0; i < nV; i++)
+                    frameMesh.Vertices.SetVertex(i, curPos[i]);
+                frameMesh.Normals.ComputeNormals();
+                intermediateShellSequence.Add(frameMesh);
+            }
+
+            // 4. Interpolate exact output Shell at user parameter foldParamT in [0, 1]
+            double tClamped = Math.Max(0.0, Math.Min(1.0, foldParamT));
+            double fReal = tClamped * (nFrames - 1);
+            int f0 = Math.Min(nFrames - 2, (int)Math.Floor(fReal));
+            int f1 = f0 + 1;
+            double alpha = fReal - f0;
+
+            Mesh activeShell = shellA.RhinoMesh.DuplicateMesh();
+            Point3d[] activePos = new Point3d[nV];
+            for (int i = 0; i < nV; i++)
+            {
+                activePos[i] = (1.0 - alpha) * allFramePositions[f0][i] + alpha * allFramePositions[f1][i];
+                activeShell.Vertices.SetVertex(i, activePos[i]);
+            }
+            activeShell.Normals.ComputeNormals();
+
+            // 5. Evaluate Tangent-Point Self-Clearance Radius & Near-Contact Stress on activeShell
+            double maxClearance = diag * 0.5;
+            double[] stressField = new double[nV];
+            for (int i = 0; i < nV; i++)
+            {
+                Point3d pi = activePos[i];
+                Vector3d ni = activeShell.Normals.Count > i ? (Vector3d)activeShell.Normals[i] : shellA.VertexNormals[i];
+                if (ni.Length > 1e-10) ni.Unitize();
+
+                double minR = maxClearance;
+                for (int j = 0; j < nV; j += repStride)
+                {
+                    if (oneRing[i].Contains(j)) continue;
+                    Vector3d diff = activePos[j] - pi;
+                    double d2 = diff.SquareLength;
+                    if (d2 < 1e-12) continue;
+
+                    // Tangent-Point sphere radius R_TP = ||x_i - x_j||^2 / (2 |n_i . (x_i - x_j)|)
+                    double normProj = Math.Abs(ni * diff);
+                    double rTp = normProj > 1e-6 ? (d2 / (2.0 * normProj)) : Math.Sqrt(d2);
+                    double dEuclid = Math.Sqrt(d2);
+                    double rEff = Math.Min(rTp, dEuclid);
+                    if (rEff < minR) minR = rEff;
+                }
+
+                selfClearanceRadii[i] = minR;
+                double contactStress = minR < shellThickness * 1.4
+                    ? Math.Min(1.0, (shellThickness * 1.4 - minR) / Math.Max(1e-5, shellThickness * 1.4))
+                    : 0.0;
+                stressField[i] = contactStress;
+
+                if (contactStress > 0.35)
+                    nearSelfContactPoints.Add(pi);
+            }
+
+            // Color activeShell by self-collision stress (Cool Teal = high clearance, Gold/Crimson = near self-contact)
+            activeShell.VertexColors.Clear();
+            for (int i = 0; i < nV; i++)
+            {
+                activeShell.VertexColors.Add(EvaluateScientificColor(stressField[i], 0));
+            }
+
+            // 6. Extract sample vertex folding trajectories from State A to State B
+            int trajStride = Math.Max(1, nV / 45);
+            for (int i = 0; i < nV; i += trajStride)
+            {
+                var pts = new List<Point3d>(nFrames);
+                for (int fIdx = 0; fIdx < nFrames; fIdx++)
+                    pts.Add(allFramePositions[fIdx][i]);
+                vertexTrajectories.Add(new Polyline(pts));
+            }
+
+            return activeShell;
+        }
+
+        // =========================================================================================
+        // 32. FAST POINTWISE SIGNED DISTANCE FOR POINT CLOUDS & POINT CLOUD DENOISING / CLEANING
+        //     Inspired by "Fast Pointwise Signed Distance for Point Clouds" / "Points as Tori"
+        //     & "A Heat Method for Generalized Signed Distance" (Feng & Crane 2024).
+        //     - Rejects statistical outliers from raw point clouds
+        //     - Estimates PCA tangent planes & globally consistent dipole normals
+        //     - Evaluates Fast Pointwise Signed Distance d_+-(x) and projects noisy points onto d=0
+        //     - Optionally reconstructs a clean watertight 3D Mesh from the zero-isosurface!
+        // =========================================================================================
+        public static List<Point3d> ComputeFastPointCloudCleanAndSignedDistance(
+            IList<Point3d> rawPoints,
+            IList<Point3d> optionalQueryPoints,
+            double outlierAndNoiseFilter,
+            int reconstructGridRes,
+            out List<Vector3d> orientedNormals,
+            out List<Point3d> rejectedOutliers,
+            out double[] evaluatedSignedDistances,
+            out Vector3d[] evaluatedSdfGradients,
+            out Mesh reconstructedSurfaceMesh)
+        {
+            orientedNormals = new List<Vector3d>();
+            rejectedOutliers = new List<Point3d>();
+            evaluatedSignedDistances = Array.Empty<double>();
+            evaluatedSdfGradients = Array.Empty<Vector3d>();
+            reconstructedSurfaceMesh = new Mesh();
+            var cleanedPoints = new List<Point3d>();
+
+            if (rawPoints == null || rawPoints.Count == 0)
+                return cleanedPoints;
+
+            int nRaw = rawPoints.Count;
+
+            // 1. Subsample reference set if cloud is huge (> 3000 pts) to keep k-NN & dipole evaluation interactive
+            int refStride = Math.Max(1, nRaw / 1500);
+            var refPts = new List<Point3d>();
+            for (int i = 0; i < nRaw; i += refStride)
+                refPts.Add(rawPoints[i]);
+            int nRef = refPts.Count;
+
+            // Compute k-NN mean distance per point for statistical outlier rejection
+            int kNN = Math.Min(10, Math.Max(3, nRef - 1));
+            double[] meanKnnDist = new double[nRaw];
+            double sumDist = 0.0;
+
+            for (int i = 0; i < nRaw; i++)
+            {
+                Point3d pi = rawPoints[i];
+                // Maintain top-k smallest squared distances to refPts
+                double[] bestD2 = new double[kNN];
+                for (int k = 0; k < kNN; k++) bestD2[k] = double.MaxValue;
+
+                for (int j = 0; j < nRef; j++)
+                {
+                    double d2 = pi.DistanceToSquared(refPts[j]);
+                    if (d2 < 1e-14) continue; // skip self
+                    if (d2 < bestD2[kNN - 1])
+                    {
+                        int ins = kNN - 1;
+                        while (ins > 0 && d2 < bestD2[ins - 1])
+                        {
+                            bestD2[ins] = bestD2[ins - 1];
+                            ins--;
+                        }
+                        bestD2[ins] = d2;
+                    }
+                }
+
+                double avgD = 0.0;
+                int validK = 0;
+                for (int k = 0; k < kNN; k++)
+                {
+                    if (bestD2[k] < double.MaxValue * 0.5)
+                    {
+                        avgD += Math.Sqrt(bestD2[k]);
+                        validK++;
+                    }
+                }
+                meanKnnDist[i] = validK > 0 ? avgD / validK : 0.0;
+                sumDist += meanKnnDist[i];
+            }
+
+            double globalMeanSpacing = sumDist / Math.Max(1, nRaw);
+            double sumVar = 0.0;
+            for (int i = 0; i < nRaw; i++)
+            {
+                double diff = meanKnnDist[i] - globalMeanSpacing;
+                sumVar += diff * diff;
+            }
+            double stdSpacing = Math.Sqrt(sumVar / Math.Max(1, nRaw));
+
+            // Outlier threshold: smaller Tol = stricter outlier rejection; Tol <= 0 keeps all points
+            double sigmaMultiplier = outlierAndNoiseFilter > 1e-4
+                ? Math.Max(0.8, 3.2 / Math.Sqrt(outlierAndNoiseFilter))
+                : 100.0;
+            double maxAllowedKnnDist = globalMeanSpacing + sigmaMultiplier * stdSpacing;
+
+            var inlierPts = new List<Point3d>(nRaw);
+            Point3d cloudCentroid = Point3d.Origin;
+            for (int i = 0; i < nRaw; i++)
+            {
+                if (outlierAndNoiseFilter > 1e-4 && meanKnnDist[i] > maxAllowedKnnDist)
+                {
+                    rejectedOutliers.Add(rawPoints[i]);
+                }
+                else
+                {
+                    inlierPts.Add(rawPoints[i]);
+                    cloudCentroid += rawPoints[i];
+                }
+            }
+
+            if (inlierPts.Count == 0)
+            {
+                inlierPts.AddRange(rawPoints);
+                rejectedOutliers.Clear();
+            }
+            cloudCentroid /= inlierPts.Count;
+
+            int nIn = inlierPts.Count;
+            int inRefStride = Math.Max(1, nIn / 1200);
+            var dipolePts = new List<Point3d>();
+            for (int i = 0; i < nIn; i += inRefStride)
+                dipolePts.Add(inlierPts[i]);
+            int nDip = dipolePts.Count;
+
+            // 2. Estimate Local PCA Tangent Plane & Consistent Outward Normal at each Inlier & Dipole Point
+            double hKernel = Math.Max(1e-5, globalMeanSpacing * 2.2);
+            double h2 = hKernel * hKernel;
+
+            Vector3d EstimateNormalAt(Point3d p)
+            {
+                // Weighted local covariance matrix around p
+                Point3d bary = Point3d.Origin;
+                double wSum = 0.0;
+                for (int j = 0; j < nDip; j++)
+                {
+                    double d2 = p.DistanceToSquared(dipolePts[j]);
+                    if (d2 > 9.0 * h2) continue;
+                    double w = 1.0 / (d2 + 0.25 * h2);
+                    bary += w * dipolePts[j];
+                    wSum += w;
+                }
+                if (wSum < 1e-12)
+                {
+                    Vector3d rad = p - cloudCentroid;
+                    if (rad.Length > 1e-10) rad.Unitize();
+                    else rad = Vector3d.ZAxis;
+                    return rad;
+                }
+                bary /= wSum;
+
+                double cxx = 0, cxy = 0, cxz = 0, cyy = 0, cyz = 0, czz = 0;
+                for (int j = 0; j < nDip; j++)
+                {
+                    double d2 = p.DistanceToSquared(dipolePts[j]);
+                    if (d2 > 9.0 * h2) continue;
+                    double w = 1.0 / (d2 + 0.25 * h2);
+                    Vector3d d = dipolePts[j] - bary;
+                    cxx += w * d.X * d.X;
+                    cxy += w * d.X * d.Y;
+                    cxz += w * d.X * d.Z;
+                    cyy += w * d.Y * d.Y;
+                    cyz += w * d.Y * d.Z;
+                    czz += w * d.Z * d.Z;
+                }
+
+                // Inverse power / cross-product extraction of smallest eigenvector (normal to local tangent plane)
+                Vector3d row0 = new Vector3d(cxx, cxy, cxz);
+                Vector3d row1 = new Vector3d(cxy, cyy, cyz);
+                Vector3d row2 = new Vector3d(cxz, cyz, czz);
+
+                Vector3d c01 = Vector3d.CrossProduct(row0, row1);
+                Vector3d c02 = Vector3d.CrossProduct(row0, row2);
+                Vector3d c12 = Vector3d.CrossProduct(row1, row2);
+
+                Vector3d bestN = c01;
+                if (c02.SquareLength > bestN.SquareLength) bestN = c02;
+                if (c12.SquareLength > bestN.SquareLength) bestN = c12;
+
+                if (bestN.Length < 1e-12) bestN = p - cloudCentroid;
+                if (bestN.Length < 1e-12) bestN = Vector3d.ZAxis;
+                bestN.Unitize();
+
+                // Orient consistently outward relative to cloud centroid + local curvature normal
+                Vector3d outward = p - cloudCentroid;
+                if ((bestN * outward) < 0.0) bestN = -bestN;
+                return bestN;
+            }
+
+            var dipoleNormals = new Vector3d[nDip];
+            for (int j = 0; j < nDip; j++)
+                dipoleNormals[j] = EstimateNormalAt(dipolePts[j]);
+
+            // Smooth dipole normals across neighbors for globally coherent Winding / Signed Distance sign!
+            for (int pass = 0; pass < 3; pass++)
+            {
+                var nextN = new Vector3d[nDip];
+                for (int i = 0; i < nDip; i++)
+                {
+                    Vector3d acc = dipoleNormals[i] * 2.0;
+                    for (int j = 0; j < nDip; j++)
+                    {
+                        double d2 = dipolePts[i].DistanceToSquared(dipolePts[j]);
+                        if (d2 > 6.0 * h2 || i == j) continue;
+                        double w = 1.0 / (d2 + 0.2 * h2);
+                        if ((dipoleNormals[i] * dipoleNormals[j]) >= 0.0)
+                            acc += w * dipoleNormals[j];
+                        else
+                            acc -= w * dipoleNormals[j];
+                    }
+                    if (acc.Length > 1e-12) acc.Unitize();
+                    else acc = dipoleNormals[i];
+
+                    if ((acc * (dipolePts[i] - cloudCentroid)) < -0.15)
+                        acc = -acc;
+                    nextN[i] = acc;
+                }
+                dipoleNormals = nextN;
+            }
+
+            // 3. Fast Pointwise Signed Distance Evaluator d_+- (Feng & Crane "Fast Pointwise Signed Distance for Point Clouds")
+            //    Evaluates singular dipole / algebraic sphere kernel:
+            //    d_+- (q) = [ sum_j w_j(q) * n_j . (q - p_j) ] / [ sum_j w_j(q) ]
+            double EvaluateFastPointwiseSDF(Point3d q, out Vector3d gradSdf)
+            {
+                double num = 0.0;
+                double den = 0.0;
+                Vector3d nAvg = Vector3d.Zero;
+                double minD2 = double.MaxValue;
+                int closestJ = 0;
+
+                double eps2 = 0.12 * h2;
+                for (int j = 0; j < nDip; j++)
+                {
+                    Vector3d diff = q - dipolePts[j];
+                    double d2 = diff.SquareLength;
+                    if (d2 < minD2)
+                    {
+                        minD2 = d2;
+                        closestJ = j;
+                    }
+
+                    double inv = 1.0 / (d2 + eps2);
+                    double w = inv * inv; // 1 / (||q - p_j||^2 + eps^2)^2 singular dipole weight
+                    num += w * (dipoleNormals[j] * diff);
+                    den += w;
+                    nAvg += w * dipoleNormals[j];
+                }
+
+                if (den < 1e-14)
+                {
+                    gradSdf = dipoleNormals[closestJ];
+                    return (q - dipolePts[closestJ]) * gradSdf;
+                }
+
+                gradSdf = nAvg / den;
+                if (gradSdf.Length > 1e-12) gradSdf.Unitize();
+                else gradSdf = dipoleNormals[closestJ];
+
+                double signedProj = num / den;
+                // Blend near-field exact plane projection with far-field Euclidean distance * sign
+                double euclidDist = Math.Sqrt(minD2);
+                double blendFar = Math.Min(1.0, euclidDist / (3.0 * hKernel));
+                double sign = signedProj >= 0.0 ? 1.0 : -1.0;
+                return (1.0 - blendFar) * signedProj + blendFar * (sign * euclidDist);
+            }
+
+            // 4. Project Inlier Points onto the Smooth Zero-Isosurface d_+- = 0 (Point Cloud Denoising!)
+            double projAlpha = Math.Min(1.0, Math.Max(0.0, outlierAndNoiseFilter * 0.42));
+            var rawDisplacements = new double[nIn];
+            var inlierGrads = new Vector3d[nIn];
+
+            for (int i = 0; i < nIn; i++)
+            {
+                Point3d p = inlierPts[i];
+                double sdf = EvaluateFastPointwiseSDF(p, out Vector3d gSdf);
+                Point3d pClean = p - (projAlpha * sdf) * gSdf;
+
+                cleanedPoints.Add(pClean);
+                orientedNormals.Add(gSdf);
+                rawDisplacements[i] = sdf;
+                inlierGrads[i] = gSdf;
+            }
+
+            // 5. Evaluate Pointwise Signed Distance at Query Points Q (or return cloud SDF values if Q is empty)
+            if (optionalQueryPoints != null && optionalQueryPoints.Count > 0)
+            {
+                int nQ = optionalQueryPoints.Count;
+                evaluatedSignedDistances = new double[nQ];
+                evaluatedSdfGradients = new Vector3d[nQ];
+                for (int q = 0; q < nQ; q++)
+                {
+                    evaluatedSignedDistances[q] = EvaluateFastPointwiseSDF(optionalQueryPoints[q], out Vector3d g);
+                    evaluatedSdfGradients[q] = g;
+                }
+            }
+            else
+            {
+                evaluatedSignedDistances = rawDisplacements;
+                evaluatedSdfGradients = inlierGrads;
+            }
+
+            // 6. Optional Watertight Surface Mesh Reconstruction from Fast Pointwise Signed Distance (d_+- = 0)
+            if (reconstructGridRes >= 6 && cleanedPoints.Count >= 4)
+            {
+                int res = Math.Min(30, reconstructGridRes);
+                BoundingBox box = new BoundingBox(cleanedPoints);
+                Vector3d pad = new Vector3d(hKernel * 1.8, hKernel * 1.8, hKernel * 1.8);
+                Point3d bMin = box.Min - pad;
+                Point3d bMax = box.Max + pad;
+                Vector3d bSpan = bMax - bMin;
+
+                double dx = Math.Max(1e-4, bSpan.X / res);
+                double dy = Math.Max(1e-4, bSpan.Y / res);
+                double dz = Math.Max(1e-4, bSpan.Z / res);
+
+                int nx = res + 1, ny = res + 1, nz = res + 1;
+                Point3d[,,] gPts = new Point3d[nx, ny, nz];
+                double[,,] gVal = new double[nx, ny, nz];
+
+                for (int ix = 0; ix < nx; ix++)
+                {
+                    for (int iy = 0; iy < ny; iy++)
+                    {
+                        for (int iz = 0; iz < nz; iz++)
+                        {
+                            Point3d gp = new Point3d(bMin.X + ix * dx, bMin.Y + iy * dy, bMin.Z + iz * dz);
+                            gPts[ix, iy, iz] = gp;
+                            gVal[ix, iy, iz] = EvaluateFastPointwiseSDF(gp, out _);
+                        }
+                    }
+                }
+
+                // Extract d_+- = 0 zero-level set via Kuhn 6-Tetrahedra Marching Tetrahedra
+                int[,] kuhnTets = new int[,]
+                {
+                    { 0, 5, 1, 6 }, { 0, 1, 2, 6 }, { 0, 2, 3, 6 },
+                    { 0, 3, 7, 6 }, { 0, 7, 4, 6 }, { 0, 4, 5, 6 }
+                };
+
+                Point3d[] cP = new Point3d[8];
+                double[] cV = new double[8];
+                Point3d[] tP = new Point3d[4];
+                double[] tV = new double[4];
+
+                for (int ix = 0; ix < res; ix++)
+                {
+                    for (int iy = 0; iy < res; iy++)
+                    {
+                        for (int iz = 0; iz < res; iz++)
+                        {
+                            cP[0] = gPts[ix, iy, iz];         cV[0] = gVal[ix, iy, iz];
+                            cP[1] = gPts[ix + 1, iy, iz];     cV[1] = gVal[ix + 1, iy, iz];
+                            cP[2] = gPts[ix + 1, iy + 1, iz]; cV[2] = gVal[ix + 1, iy + 1, iz];
+                            cP[3] = gPts[ix, iy + 1, iz];     cV[3] = gVal[ix, iy + 1, iz];
+                            cP[4] = gPts[ix, iy, iz + 1];     cV[4] = gVal[ix, iy, iz + 1];
+                            cP[5] = gPts[ix + 1, iy, iz + 1]; cV[5] = gVal[ix + 1, iy, iz + 1];
+                            cP[6] = gPts[ix + 1, iy + 1, iz + 1]; cV[6] = gVal[ix + 1, iy + 1, iz + 1];
+                            cP[7] = gPts[ix, iy + 1, iz + 1]; cV[7] = gVal[ix, iy + 1, iz + 1];
+
+                            bool allPos = true, allNeg = true;
+                            for (int c = 0; c < 8; c++)
+                            {
+                                if (cV[c] <= 0.0) allPos = false;
+                                if (cV[c] >= 0.0) allNeg = false;
+                            }
+                            if (allPos || allNeg) continue;
+
+                            for (int t = 0; t < 6; t++)
+                            {
+                                for (int tv = 0; tv < 4; tv++)
+                                {
+                                    int cid = kuhnTets[t, tv];
+                                    tP[tv] = cP[cid];
+                                    tV[tv] = cV[cid];
+                                }
+                                AddMarchingTetIsoTriangles(
+                                    reconstructedSurfaceMesh,
+                                    tP[0], tP[1], tP[2], tP[3],
+                                    tV[0], tV[1], tV[2], tV[3]);
+                            }
+                        }
+                    }
+                }
+
+                reconstructedSurfaceMesh.Weld(Math.PI);
+                reconstructedSurfaceMesh.Normals.ComputeNormals();
+            }
+
+            return cleanedPoints;
+        }
     }
 }

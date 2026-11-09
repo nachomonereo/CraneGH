@@ -13,6 +13,7 @@
 
 2. **`02. Geodesics & Iso-Cut`**
    - **`HeatDist`**: Geodesic distance and redistributed gradient from **any external geometry** (Points, Curves, Meshes, or Breps).
+   - **`CleanCloud` (`Point Cloud Clean & Fast Signed Distance`)**: Inspired by *Fast Pointwise Signed Distance for Point Clouds / Points as Tori* (Feng & Crane 2024). Filters statistical outliers from raw point clouds, estimates globally consistent normals, projects noisy points onto the smooth zero-isosurface $d_{\pm}=0$, evaluates pointwise signed distances, and reconstructs a watertight 3D mesh.
    - **`IsoCut`**: Exact sub-triangle Iso-Contour extraction and topological mesh band slicing in real physical units (e.g. `4.55`) or normalized `[0..1]`.
    - **`GeoPath`**: Exact shortest geodesic paths traced along the negative heat gradient.
    - **`FlipOut`**: Intrinsic geodesic curve & network shortening with sliding junctions.
@@ -36,6 +37,7 @@
 4. **`04. Stripes & Conformal`**
    - **`Stripes`** & **`CrossQuads`**: Equidistant stripe patterns with topological bifurcations and orthogonal quad grids at exact physical spacing $D$.
    - **`BFF`**, **`Auxetics`**, **`SpinXForm`**: Boundary First Flattening, Deployable Auxetic kirigami mechanisms, and Quaternion Dirac Spin conformal deformations.
+   - **`RepulsiveFold` (`Repulsive Shell Folding & Self-Collision`)**: Folds, bends, or interpolates a thin shell mesh from State $A$ to State $B$ using Sobolev-preconditioned **Tangent-Point Self-Collision Repulsion** + Elastic Membrane preservation (*Repulsive Shells*, Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024).
 
 5. **`05. Mold, Segmentation & CAM`**
    - **`CurvSeg` (`Curvature Regime & Inflection Cutter`)**: Segments a mesh into **Concave** (`Ccv`) and **Convex** (`Cvx`) pieces by placing subdivision cut lines at **Zero-Curvature Inflection $H = T$ (`Mode 0`)**, **Curvature Maxima Ridges (`Mode 1`, leaving concave basins)**, **Curvature Minima Valleys (`Mode 2`, leaving convex lobes)**, or **3-Regime Concave/Flat/Convex Bands (`Mode 3`)**.

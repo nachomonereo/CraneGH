@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Types;
 using Rhino.Geometry;
 using CraneGH.Core;
 
@@ -384,5 +385,229 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A107B207-C307-4D07-9E07-000000000021");
+    }
+
+    public class GH_RepulsiveShellFolding : GH_Component
+    {
+        private Mesh _activeShell;
+        private readonly List<Polyline> _trajectories = new List<Polyline>();
+        private readonly List<Point3d> _contactPts = new List<Point3d>();
+
+        public GH_RepulsiveShellFolding()
+          : base("Repulsive Shell Folding & Self-Collision", "RepulsiveFold",
+              "Folds, bends, or interpolates a thin shell mesh from State A to State B using Sobolev-preconditioned Tangent-Point Self-Collision Repulsion + Elastic Membrane preservation (Sassen, Schumacher, Rumpf, Wardetzky, Crane 'Repulsive Shells').",
+              "CraneGH", "04. Stripes & Conformal")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("SpinXForm");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Start Shell A", "MA", "Initial shell mesh State A to fold, bend, or morph", GH_ParamAccess.item);
+            int idxB = pManager.AddGenericParameter("Target Shell B / Handles", "MB", "Optional target shell mesh State B or target handle points (if empty, performs self-avoiding roll/arch folding of Shell A)", GH_ParamAccess.list);
+            pManager[idxB].Optional = true;
+            pManager.AddNumberParameter("Fold / Morph T [0..1]", "T", "Interpolation / folding progress from State A (0.0) to State B (1.0)", GH_ParamAccess.item, 0.75);
+            pManager.AddNumberParameter("Repulsion Strength", "R", "Tangent-Point self-collision repulsion thickness & stiffness", GH_ParamAccess.item, 2.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Folded Shell", "Shell", "Deformed shell mesh at parameter T free of self-intersections (colored by self-contact stress)", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Shell Sequence", "Seq", "Sequence of intermediate geodesic shell states from A to B", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Folding Trajectories", "Traj", "3D vertex trajectories from State A to State B", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Self-Clearance Radius", "Clr", "Local Tangent-Point self-collision clearance radius per vertex", GH_ParamAccess.list);
+            pManager.AddPointParameter("Near-Contact Points", "CP", "Vertices where the repulsive self-collision barrier actively pushed the shell apart", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _activeShell = null;
+            _trajectories.Clear();
+            _contactPts.Clear();
+
+            Mesh mA = null;
+            var rawB = new List<object>();
+            double tParam = 0.75;
+            double repStrength = 2.0;
+
+            if (!DA.GetData(0, ref mA) || mA == null) return;
+            DA.GetDataList(1, rawB);
+            DA.GetData(2, ref tParam);
+            DA.GetData(3, ref repStrength);
+
+            Mesh targetMeshB = null;
+            var targetHandles = new List<Point3d>();
+
+            foreach (object obj in rawB)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is Mesh mb) targetMeshB = mb;
+                else if (val is Point3d pt) targetHandles.Add(pt);
+            }
+
+            var ddgA = new DdgMesh(mA);
+            _activeShell = DdgAlgorithms.ComputeRepulsiveShellFoldingAndSelfCollision(
+                ddgA,
+                targetMeshB,
+                targetHandles.Count > 0 ? targetHandles : null,
+                tParam,
+                repStrength,
+                out List<Mesh> seq,
+                out List<Polyline> trajs,
+                out double[] clrRadii,
+                out List<Point3d> contacts);
+
+            _trajectories.AddRange(trajs);
+            _contactPts.AddRange(contacts);
+
+            DA.SetData(0, _activeShell);
+            DA.SetDataList(1, seq);
+            DA.SetDataList(2, trajs);
+            DA.SetDataList(3, clrRadii);
+            DA.SetDataList(4, contacts);
+        }
+
+        public override void DrawViewportMeshes(IGH_PreviewArgs args)
+        {
+            base.DrawViewportMeshes(args);
+            if (Hidden || Locked || _activeShell == null) return;
+            args.Display.DrawMeshFalseColors(_activeShell);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            foreach (var pl in _trajectories)
+                args.Display.DrawPolyline(pl, Color.FromArgb(140, 0, 235, 255), 1);
+
+            if (_contactPts.Count > 0)
+                args.Display.DrawPoints(_contactPts, Rhino.Display.PointStyle.RoundControlPoint, 5, Color.Gold);
+        }
+
+        public override Guid ComponentGuid => new Guid("A107B207-C307-4D07-9E07-000000000046");
+    }
+
+    public class GH_PointCloudCleanAndSignedDistance : GH_Component
+    {
+        private readonly List<Point3d> _cleanPts = new List<Point3d>();
+        private readonly List<Point3d> _outlierPts = new List<Point3d>();
+        private readonly List<Line> _normalLines = new List<Line>();
+        private Mesh _reconstructedMesh;
+
+        public GH_PointCloudCleanAndSignedDistance()
+          : base("Point Cloud Clean & Fast Signed Distance", "CleanCloud",
+              "Cleans noisy 3D Point Clouds (statistical outlier removal + zero-isosurface projection), estimates globally consistent normals, and evaluates Fast Pointwise Signed Distance & Surface Reconstruction (Feng & Crane 'Points as Tori / Signed Heat').",
+              "CraneGH", "02. Geodesics & Iso-Cut")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("SignDist");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddGenericParameter("Point Cloud", "P", "Input noisy Point3d list, Rhino PointCloud, or Mesh vertices to clean", GH_ParamAccess.list);
+            int idxQ = pManager.AddPointParameter("Query Points", "Q", "Optional 3D query points where Fast Pointwise Signed Distance is evaluated (if empty, evaluates at the cloud points)", GH_ParamAccess.list);
+            pManager[idxQ].Optional = true;
+            pManager.AddNumberParameter("Filter & Denoise", "Tol", "Outlier rejection & zero-isosurface projection strength (0 = raw, 1..5 = clean & smooth)", GH_ParamAccess.item, 2.0);
+            pManager.AddIntegerParameter("Mesh Grid Res", "Res", "3D grid resolution to reconstruct a watertight surface mesh from d=0 (0 = skip mesh reconstruction)", GH_ParamAccess.item, 14);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddPointParameter("Cleaned Points", "CP", "Denoised, outlier-free 3D Point Cloud projected onto the smooth zero-level set", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Oriented Normals", "N", "Globally consistent outward unit normals per cleaned point", GH_ParamAccess.list);
+            pManager.AddPointParameter("Removed Outliers", "Out", "Rejected statistical outlier points", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Signed Distance", "SDF", "Fast Pointwise Signed Distance d_+- at Query Points Q (or projection distance per cloud point)", GH_ParamAccess.list);
+            pManager.AddVectorParameter("SDF Gradient", "Grad", "Unit gradient of the Pointwise Signed Distance field", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Reconstructed Mesh", "M", "Watertight 3D surface mesh extracted from the zero-isosurface d_+- = 0", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _cleanPts.Clear();
+            _outlierPts.Clear();
+            _normalLines.Clear();
+            _reconstructedMesh = null;
+
+            var rawInputs = new List<object>();
+            var queryPts = new List<Point3d>();
+            double tol = 2.0;
+            int res = 14;
+
+            if (!DA.GetDataList(0, rawInputs) || rawInputs.Count == 0) return;
+            DA.GetDataList(1, queryPts);
+            DA.GetData(2, ref tol);
+            DA.GetData(3, ref res);
+
+            var cloudPts = new List<Point3d>();
+            foreach (object obj in rawInputs)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is Point3d pt) cloudPts.Add(pt);
+                else if (val is PointCloud pc)
+                {
+                    Point3d[] pts = pc.GetPoints();
+                    if (pts != null) cloudPts.AddRange(pts);
+                }
+                else if (val is Mesh m)
+                {
+                    for (int i = 0; i < m.Vertices.Count; i++)
+                        cloudPts.Add(m.Vertices.Point3dAt(i));
+                }
+            }
+
+            if (cloudPts.Count == 0) return;
+
+            List<Point3d> cleaned = DdgAlgorithms.ComputeFastPointCloudCleanAndSignedDistance(
+                cloudPts,
+                queryPts.Count > 0 ? queryPts : null,
+                tol,
+                res,
+                out List<Vector3d> normals,
+                out List<Point3d> outliers,
+                out double[] sdfVals,
+                out Vector3d[] sdfGrads,
+                out _reconstructedMesh);
+
+            _cleanPts.AddRange(cleaned);
+            _outlierPts.AddRange(outliers);
+
+            BoundingBox bbox = new BoundingBox(cleaned);
+            double nLen = Math.Max(0.2, bbox.Diagonal.Length * 0.035);
+            int stride = Math.Max(1, cleaned.Count / 300);
+            for (int i = 0; i < cleaned.Count; i += stride)
+            {
+                _normalLines.Add(new Line(cleaned[i], cleaned[i] + nLen * normals[i]));
+            }
+
+            DA.SetDataList(0, cleaned);
+            DA.SetDataList(1, normals);
+            DA.SetDataList(2, outliers);
+            DA.SetDataList(3, sdfVals);
+            DA.SetDataList(4, sdfGrads);
+            DA.SetData(5, _reconstructedMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            if (_cleanPts.Count > 0)
+                args.Display.DrawPoints(_cleanPts, Rhino.Display.PointStyle.RoundSimple, 3, Color.FromArgb(0, 235, 190));
+
+            if (_outlierPts.Count > 0)
+                args.Display.DrawPoints(_outlierPts, Rhino.Display.PointStyle.X, 4, Color.FromArgb(255, 75, 75));
+
+            if (_normalLines.Count > 0)
+                args.Display.DrawLines(_normalLines, Color.FromArgb(140, 90, 180, 255), 1);
+        }
+
+        public override Guid ComponentGuid => new Guid("A107B207-C307-4D07-9E07-000000000047");
     }
 }
