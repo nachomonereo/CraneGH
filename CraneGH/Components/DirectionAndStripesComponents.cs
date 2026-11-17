@@ -217,7 +217,7 @@ namespace CraneGH.Components
     {
         public GH_StripePatterns()
           : base("Vector Field Stripes", "Stripes",
-              "Generates equidistant stripe curves separated by Distance D from a Vector Field V, with control over whether stripe ends touch (default = False).",
+              "Generates stripe curves aligned to a Vector Field V: pass a single Distance D for strictly equidistant stripes, or a Scalar Field list in D to weight stripe spacing.",
               "CraneGH", "03. Vector Fields & Stripes")
         {
         }
@@ -228,14 +228,16 @@ namespace CraneGH.Components
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
             pManager.AddVectorParameter("Vector Field", "V", "Tangent direction vector per vertex or face (leave empty for automatic principal curvature field)", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Distance", "D", "Target physical spacing distance (in Rhino units) between stripe curves", GH_ParamAccess.item, 0.0);
+            pManager.AddNumberParameter("Distance or Weights", "D", "Single number (e.g. 2.5) for strictly equidistant stripes, OR a Scalar Field list to weight local stripe spacing", GH_ParamAccess.list, 0.0);
             pManager.AddBooleanParameter("Touch Ends", "T", "False (default) = stripe ends stay separated at bifurcations/loops; True = stripe ends touch and connect", GH_ParamAccess.item, false);
             pManager[1].Optional = true;
+            pManager[2].Optional = true;
+            pManager[3].Optional = true;
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Stripe Curves", "C", "Extracted equidistant stripe curves", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Stripe Curves", "C", "Extracted equidistant or scalar-weighted stripe curves", GH_ParamAccess.list);
             pManager.AddNumberParameter("Stripe Wave", "S", "Cosine stripe wave value in [-1, 1] per vertex", GH_ParamAccess.list);
             pManager.AddPointParameter("Branch Points", "B", "Locations of topological stripe bifurcations (Y-junctions)", GH_ParamAccess.list);
             pManager.AddMeshParameter("Striped Mesh", "CM", "Mesh vertex-colored with the stripe pattern", GH_ParamAccess.item);
@@ -245,16 +247,19 @@ namespace CraneGH.Components
         {
             Mesh m = null;
             var vecs = new List<Vector3d>();
-            double dist = 0.0;
+            var distOrWeights = new List<double>();
             bool touchEnds = false;
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetDataList(1, vecs);
-            DA.GetData(2, ref dist);
+            DA.GetDataList(2, distOrWeights);
             DA.GetData(3, ref touchEnds);
 
             var ddg = new DdgMesh(m);
+            double baseDist = (distOrWeights.Count == 1) ? distOrWeights[0] : 0.0;
+            IList<double> weightField = (distOrWeights.Count > 1) ? distOrWeights : null;
+
             double[] wave = DdgAlgorithms.ComputeStripePatternsByDistance(
-                ddg, vecs, null, dist, 2, out List<Polyline> stripeCurves, out List<Point3d> branches, null, touchEnds);
+                ddg, vecs, null, baseDist, 2, out List<Polyline> stripeCurves, out List<Point3d> branches, weightField, touchEnds);
             Mesh colored = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, wave, true);
 
             DA.SetDataList(0, stripeCurves);
@@ -1401,5 +1406,81 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000050");
+    }
+
+    public class GH_ScalarVectorFieldMixer : GH_Component
+    {
+        private readonly List<Line> _previewSegs = new List<Line>();
+
+        public GH_ScalarVectorFieldMixer()
+          : base("Scalar + Vector Field Mixer", "FieldMix",
+              "Mixes any Scalar Field S with a Vector Field V (3 inputs) to produce Scalar-Weighted Vectors, Gradient-Blended Vectors, Scalar-Rotated Vectors, and Normalized [0..1] Weights for Stripes or QuadRemesh.",
+              "CraneGH", "03. Vector Fields & Stripes")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GuidedFlow");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            pManager.AddVectorParameter("Vector Field", "V", "Input tangent vector field (leave empty for Principal Curvature directions)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Scalar Field", "S", "Input scalar field to mix with V (leave empty for Geodesic Distance)", GH_ParamAccess.list);
+            pManager[1].Optional = true;
+            pManager[2].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddVectorParameter("Weighted Vectors", "VW", "Vectors scaled by normalized Scalar Field S", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Gradient-Blended Vectors", "VG", "Vectors blended toward the gradient of Scalar Field S", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Scalar-Rotated Vectors", "VR", "Vectors rotated in the tangent plane by S * 180 deg", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Normalized Weights", "W", "Normalized scalar weights in [0..1] (plug into Stripes D or QuadRemesh D!)", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _previewSegs.Clear();
+
+            Mesh m = null;
+            var inVecs = new List<Vector3d>();
+            var inScalars = new List<double>();
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, inVecs);
+            DA.GetDataList(2, inScalars);
+
+            var ddg = new DdgMesh(m);
+            Vector3d[] wVecs = DdgAlgorithms.ComputeScalarVectorFieldMix(
+                ddg,
+                inVecs.Count > 0 ? inVecs : null,
+                inScalars.Count > 0 ? inScalars : null,
+                out Vector3d[] gBlend,
+                out Vector3d[] sRot,
+                out double[] normW);
+
+            double segLen = 0.55 * ddg.MeanEdgeLength;
+            int stride = Math.Max(1, ddg.VertexCount / 650);
+            for (int i = 0; i < ddg.VertexCount; i += stride)
+            {
+                Point3d p = ddg.Positions[i];
+                _previewSegs.Add(new Line(p - 0.5 * segLen * wVecs[i], p + 0.5 * segLen * wVecs[i]));
+            }
+
+            DA.SetDataList(0, wVecs);
+            DA.SetDataList(1, gBlend);
+            DA.SetDataList(2, sRot);
+            DA.SetDataList(3, normW);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _previewSegs.Count == 0) return;
+
+            Color cSeg = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 235, 215);
+            args.Display.DrawLines(_previewSegs, cSeg, 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000056");
     }
 }

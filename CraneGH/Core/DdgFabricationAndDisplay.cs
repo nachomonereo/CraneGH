@@ -5824,5 +5824,925 @@ namespace CraneGH.Core
             geodesicSeamCurves = ExtractLabelBoundaryCurves(ddg, faceLabels, seamPos);
             return resultMeshes;
         }
+
+        // =========================================================================================
+        // 34. SCALAR + VECTOR FIELD MIXER (Weights, Gradient Blending & Scalar-Driven Rotation)
+        // =========================================================================================
+        public static Vector3d[] ComputeScalarVectorFieldMix(
+            DdgMesh mesh,
+            IList<Vector3d> inputVectors,
+            IList<double> inputScalars,
+            out Vector3d[] gradientBlendedVectors,
+            out Vector3d[] scalarRotatedVectors,
+            out double[] normalizedWeights)
+        {
+            int nV = mesh.VertexCount;
+            Vector3d[] baseV = (inputVectors != null && inputVectors.Count > 0)
+                ? mesh.MapVectorInputToVertices(inputVectors)
+                : mesh.PrincipalDir;
+
+            double[] rawS = (inputScalars != null && inputScalars.Count > 0)
+                ? mesh.MapScalarInputToVertices(inputScalars)
+                : ComputeHeatDistance(mesh, new int[] { 0 }, 1.0, out _, out _);
+
+            double sMin = double.MaxValue, sMax = double.MinValue;
+            for (int i = 0; i < nV; i++)
+            {
+                if (rawS[i] < sMin) sMin = rawS[i];
+                if (rawS[i] > sMax) sMax = rawS[i];
+            }
+            double sSpan = Math.Max(1e-12, sMax - sMin);
+
+            normalizedWeights = new double[nV];
+            for (int i = 0; i < nV; i++)
+                normalizedWeights[i] = (rawS[i] - sMin) / sSpan;
+
+            mesh.ComputeGradient(normalizedWeights, out _, out Vector3d[] gradS);
+
+            var weightedVectors = new Vector3d[nV];
+            gradientBlendedVectors = new Vector3d[nV];
+            scalarRotatedVectors = new Vector3d[nV];
+
+            for (int i = 0; i < nV; i++)
+            {
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d v = baseV[i];
+                v -= (v * n) * n;
+                if (!v.Unitize()) v = mesh.TangentBasisX[i];
+
+                Vector3d wOrtho = Vector3d.CrossProduct(n, v);
+                if (!wOrtho.Unitize()) wOrtho = mesh.TangentBasisY[i];
+
+                double w = normalizedWeights[i]; // in [0, 1]
+
+                // 1. Weighted Vector: scaled by (0.15 + 1.85 * w)
+                weightedVectors[i] = v * (0.15 + 1.85 * w);
+
+                // 2. Gradient-Blended Vector: blends V with grad(S) weighted by w
+                Vector3d g = gradS[i];
+                g -= (g * n) * n;
+                if (g.Unitize())
+                {
+                    Vector3d blend = (1.0 - 0.65 * w) * v + (0.65 * w) * g;
+                    blend -= (blend * n) * n;
+                    if (!blend.Unitize()) blend = v;
+                    gradientBlendedVectors[i] = blend;
+                }
+                else
+                {
+                    gradientBlendedVectors[i] = v;
+                }
+
+                // 3. Scalar-Rotated Vector: rotates V in tangent plane by angle w * pi
+                double ang = w * Math.PI;
+                scalarRotatedVectors[i] = Math.Cos(ang) * v + Math.Sin(ang) * wOrtho;
+            }
+
+            return weightedVectors;
+        }
+
+        // =========================================================================================
+        // 35. FIELD-ALIGNED & DISTANCE / SCALAR-WEIGHTED QUAD REMESH
+        //     (Combines Cross Fields + Stripe Spacing + Anisotropic Quad Pairing & Smoothing)
+        // =========================================================================================
+        public static Mesh ComputeFieldAlignedQuadRemesh(
+            DdgMesh mesh,
+            IList<Vector3d> optionalDirectionField,
+            IList<double> distanceOrScalarWeights,
+            out List<Polyline> quadCellCurves,
+            out List<Polyline> uvGridCurves,
+            out List<double> quadFaceSizes)
+        {
+            quadCellCurves = new List<Polyline>();
+            uvGridCurves = new List<Polyline>();
+            quadFaceSizes = new List<double>();
+
+            int nV = mesh.VertexCount;
+            BoundingBox bbox = mesh.RhinoMesh.GetBoundingBox(false);
+            double diag = Math.Max(1e-6, bbox.Diagonal.Length);
+
+            // 1. Resolve target base distance D and optional per-vertex scalar weights
+            double baseDist;
+            double[] vertexTargetSize = new double[nV];
+            bool hasVariableWeights = false;
+
+            if (distanceOrScalarWeights == null || distanceOrScalarWeights.Count == 0)
+            {
+                baseDist = Math.Max(1.15 * mesh.MeanEdgeLength, diag / 24.0);
+                for (int i = 0; i < nV; i++) vertexTargetSize[i] = baseDist;
+            }
+            else if (distanceOrScalarWeights.Count == 1)
+            {
+                baseDist = distanceOrScalarWeights[0] > 1e-5
+                    ? distanceOrScalarWeights[0]
+                    : Math.Max(1.15 * mesh.MeanEdgeLength, diag / 24.0);
+                for (int i = 0; i < nV; i++) vertexTargetSize[i] = baseDist;
+            }
+            else
+            {
+                hasVariableWeights = true;
+                double[] rawW = mesh.MapScalarInputToVertices(distanceOrScalarWeights);
+                double wMin = double.MaxValue, wMax = double.MinValue, wSum = 0.0;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (rawW[i] < wMin) wMin = rawW[i];
+                    if (rawW[i] > wMax) wMax = rawW[i];
+                    wSum += Math.Abs(rawW[i]);
+                }
+                double wMean = wSum / Math.Max(1, nV);
+                baseDist = (wMin > 1e-4 && wMax < diag * 0.5)
+                    ? Math.Max(0.5 * mesh.MeanEdgeLength, wMean)
+                    : Math.Max(1.15 * mesh.MeanEdgeLength, diag / 22.0);
+
+                double wSpan = Math.Max(1e-12, wMax - wMin);
+                for (int i = 0; i < nV; i++)
+                {
+                    double t = (rawW[i] - wMin) / wSpan; // t=1 -> high weight -> SMALLER quad distance (denser quads!)
+                    vertexTargetSize[i] = baseDist * (1.55 - 1.05 * t);
+                }
+            }
+
+            // 2. Compute smooth 4-RoSy Cross Field (U, V) on the input mesh
+            Vector3d[] uDir = ComputeOptimalDirectionField(
+                mesh,
+                4,
+                0.65,
+                out Vector3d[] vDir,
+                out _,
+                (optionalDirectionField != null && optionalDirectionField.Count > 0) ? optionalDirectionField : null);
+
+            // Extract U and V stripe grid curves at target distance D for visual reference
+            ComputeStripePatternsByDistance(
+                mesh, uDir, null, baseDist, 2, out List<Polyline> uStripes, out _,
+                hasVariableWeights ? distanceOrScalarWeights : null, true);
+            ComputeStripePatternsByDistance(
+                mesh, vDir, null, baseDist, 2, out List<Polyline> vStripes, out _,
+                hasVariableWeights ? distanceOrScalarWeights : null, true);
+            uvGridCurves.AddRange(uStripes);
+            uvGridCurves.AddRange(vStripes);
+
+            // 3. Resample / cluster mesh vertices so vertex spacing matches vertexTargetSize[i]
+            Mesh workTriMesh = ResampleTriMeshToTargetEdgeSize(mesh, vertexTargetSize, baseDist);
+            var ddgWork = new DdgMesh(workTriMesh);
+            int wV = ddgWork.VertexCount;
+            int wF = ddgWork.FaceCount;
+
+            // Transfer Cross Field (U, V) and target edge size to ddgWork
+            Vector3d[] workU = new Vector3d[wV];
+            Vector3d[] workV = new Vector3d[wV];
+            double[] workSize = new double[wV];
+            for (int i = 0; i < wV; i++)
+            {
+                Point3d p = ddgWork.Positions[i];
+                int nearOrig = mesh.FindClosestVertex(p);
+                Vector3d n = ddgWork.VertexNormals[i];
+                Vector3d u = uDir[nearOrig] - (uDir[nearOrig] * n) * n;
+                if (!u.Unitize()) u = ddgWork.TangentBasisX[i];
+                Vector3d v = Vector3d.CrossProduct(n, u);
+                if (!v.Unitize()) v = ddgWork.TangentBasisY[i];
+                workU[i] = u;
+                workV[i] = v;
+                workSize[i] = vertexTargetSize[nearOrig];
+            }
+
+            // 4. Cross-Field Diagonal Triangle Pairing -> Merge triangle pairs into true 4-sided Quads!
+            //    Score every interior edge by how well merging its 2 adjacent triangles forms a rectangular
+            //    quad whose 4 outer edges align with Cross Field (workU, workV)!
+            var candidates = new List<(double score, int edgeIdx, int f0, int f1, int vA, int vD, int vB, int vC)>();
+
+            foreach (var e in ddgWork.Edges)
+            {
+                if (e.HalfEdge1 == -1) continue;
+                var he0 = ddgWork.HalfEdges[e.HalfEdge0];
+                var he1 = ddgWork.HalfEdges[e.HalfEdge1];
+                int f0 = he0.FaceIndex;
+                int f1 = he1.FaceIndex;
+                if (f0 == f1) continue;
+
+                // Skip pairing across sharp feature creases (> 42 deg)
+                if (e.DihedralAngle > 0.75) continue;
+
+                int vA = he0.OriginVertex;
+                int vB = he0.TargetVertex;
+                int vC = ddgWork.HalfEdges[he0.Next].TargetVertex;
+                int vD = ddgWork.HalfEdges[he1.Next].TargetVertex;
+                if (vC == vD) continue;
+
+                // Quad vertices in counter-clockwise order around the merged face: (vA, vD, vB, vC)
+                Point3d pA = ddgWork.Positions[vA];
+                Point3d pD = ddgWork.Positions[vD];
+                Point3d pB = ddgWork.Positions[vB];
+                Point3d pC = ddgWork.Positions[vC];
+
+                Vector3d uRef = workU[vA];
+                Vector3d vRef = workV[vA];
+
+                // Measure how diagonal the shared edge (pB - pA) is to (uRef, vRef), and how aligned the 4 outer edges are!
+                Vector3d eDiag = pB - pA;
+                if (!eDiag.Unitize()) continue;
+                double diagU = Math.Abs(eDiag * uRef);
+                double diagV = Math.Abs(eDiag * vRef);
+                // A true quad diagonal has |e . U| ≈ |e . V| ≈ 0.707 -> 2*|e.U|*|e.V| ≈ 1.0
+                double diagScore = 2.0 * diagU * diagV;
+
+                // Check interior angles of quad (pA, pD, pB, pC) near 90 degrees
+                Point3d[] qPts = new Point3d[] { pA, pD, pB, pC };
+                double anglePenalty = 0.0;
+                bool convex = true;
+                Vector3d fNorm = ddgWork.FaceNormals[f0] + ddgWork.FaceNormals[f1];
+                if (!fNorm.Unitize()) fNorm = Vector3d.ZAxis;
+
+                for (int k = 0; k < 4; k++)
+                {
+                    Vector3d prevE = qPts[(k + 3) % 4] - qPts[k];
+                    Vector3d nextE = qPts[(k + 1) % 4] - qPts[k];
+                    if (!prevE.Unitize() || !nextE.Unitize()) { convex = false; break; }
+                    if (Vector3d.CrossProduct(nextE, prevE) * fNorm < -0.05) { convex = false; break; }
+                    double cosCorner = Math.Abs(prevE * nextE); // 0 for 90 degrees!
+                    anglePenalty += cosCorner;
+
+                    // Outer edge alignment with Cross Field (uRef, vRef)
+                    double alignUV = Math.Max(Math.Abs(nextE * uRef), Math.Abs(nextE * vRef));
+                    diagScore += 0.35 * alignUV;
+                }
+                if (!convex) continue;
+
+                double totalScore = diagScore - 0.65 * anglePenalty;
+                candidates.Add((totalScore, e.Index, f0, f1, vA, vD, vB, vC));
+            }
+
+            candidates.Sort((a, b) => b.score.CompareTo(a.score));
+
+            bool[] faceMatched = new bool[wF];
+            var quadFaces = new List<int[]>();
+
+            foreach (var cand in candidates)
+            {
+                if (faceMatched[cand.f0] || faceMatched[cand.f1]) continue;
+                faceMatched[cand.f0] = true;
+                faceMatched[cand.f1] = true;
+                quadFaces.Add(new int[] { cand.vA, cand.vD, cand.vB, cand.vC });
+            }
+
+            // Second pass: relax threshold to pair remaining adjacent unmatched triangles
+            for (int f = 0; f < wF; f++)
+            {
+                if (faceMatched[f]) continue;
+                int baseHe = f * 3;
+                int bestNb = -1;
+                int bestVA = -1, bestVD = -1, bestVB = -1, bestVC = -1;
+                double bestDot = 2.0;
+
+                for (int k = 0; k < 3; k++)
+                {
+                    var he0 = ddgWork.HalfEdges[baseHe + k];
+                    if (he0.Twin == -1) continue;
+                    var he1 = ddgWork.HalfEdges[he0.Twin];
+                    int nf = he1.FaceIndex;
+                    if (faceMatched[nf] || nf == f) continue;
+
+                    int vA = he0.OriginVertex;
+                    int vB = he0.TargetVertex;
+                    int vC = ddgWork.HalfEdges[he0.Next].TargetVertex;
+                    int vD = ddgWork.HalfEdges[he1.Next].TargetVertex;
+                    if (vC == vD) continue;
+
+                    Vector3d d1 = ddgWork.Positions[vB] - ddgWork.Positions[vA];
+                    Vector3d d2 = ddgWork.Positions[vC] - ddgWork.Positions[vD];
+                    if (d1.Unitize() && d2.Unitize())
+                    {
+                        double ortho = Math.Abs(d1 * d2);
+                        if (ortho < bestDot)
+                        {
+                            bestDot = ortho;
+                            bestNb = nf;
+                            bestVA = vA; bestVD = vD; bestVB = vB; bestVC = vC;
+                        }
+                    }
+                }
+
+                if (bestNb != -1)
+                {
+                    faceMatched[f] = true;
+                    faceMatched[bestNb] = true;
+                    quadFaces.Add(new int[] { bestVA, bestVD, bestVB, bestVC });
+                }
+            }
+
+            // 5. Cross-Field Aligned Tangential Quad Vertex Relaxation (8 passes)
+            //    Aligns quad edges with (workU, workV) at target spacing workSize[v] while hugging the surface!
+            Point3d[] qPos = (Point3d[])ddgWork.Positions.Clone();
+            Point3d[] qNext = (Point3d[])ddgWork.Positions.Clone();
+            var qAdj = new List<int>[wV];
+            for (int i = 0; i < wV; i++) qAdj[i] = new List<int>(4);
+
+            foreach (var qf in quadFaces)
+            {
+                for (int k = 0; k < 4; k++)
+                {
+                    int u = qf[k];
+                    int v = qf[(k + 1) % 4];
+                    if (!qAdj[u].Contains(v)) qAdj[u].Add(v);
+                    if (!qAdj[v].Contains(u)) qAdj[v].Add(u);
+                }
+            }
+
+            for (int pass = 0; pass < 8; pass++)
+            {
+                bool snapSurf = (pass == 7) || (pass % 3 == 2);
+                for (int i = 0; i < wV; i++)
+                {
+                    if (ddgWork.VertexOnBoundary[i] || qAdj[i].Count == 0)
+                    {
+                        qNext[i] = qPos[i];
+                        continue;
+                    }
+
+                    Point3d pi = qPos[i];
+                    Vector3d u = workU[i];
+                    Vector3d v = workV[i];
+                    Vector3d n = ddgWork.VertexNormals[i];
+                    double targetL = workSize[i];
+
+                    Point3d sumTarget = Point3d.Origin;
+                    int cnt = 0;
+                    foreach (int nb in qAdj[i])
+                    {
+                        Point3d pj = qPos[nb];
+                        Vector3d diff = pi - pj;
+                        diff -= (diff * n) * n;
+                        double du = diff * u;
+                        double dv = diff * v;
+
+                        // Snap neighbor offset to nearest Cross-Field axis direction (+-U or +-V) at length targetL
+                        Vector3d idealOffset;
+                        if (Math.Abs(du) >= Math.Abs(dv))
+                            idealOffset = (du >= 0 ? 1.0 : -1.0) * targetL * u;
+                        else
+                            idealOffset = (dv >= 0 ? 1.0 : -1.0) * targetL * v;
+
+                        Point3d idealPos = pj + 0.55 * diff + 0.45 * idealOffset;
+                        sumTarget += idealPos;
+                        cnt++;
+                    }
+
+                    Point3d cand = 0.45 * pi + 0.55 * (sumTarget / cnt);
+                    Vector3d disp = cand - pi;
+                    disp -= (disp * n) * n;
+                    cand = pi + disp;
+
+                    if (snapSurf)
+                    {
+                        Point3d cp = mesh.RhinoMesh.ClosestPoint(cand);
+                        if (cp.IsValid) cand = cp;
+                    }
+                    qNext[i] = cand;
+                }
+                for (int i = 0; i < wV; i++) qPos[i] = qNext[i];
+            }
+
+            // 6. Build output Quad Mesh (QM), Quad Cell Polylines (QC), and Face Sizes (S)
+            var outQuadMesh = new Mesh();
+            outQuadMesh.Vertices.AddVertices(qPos);
+
+            foreach (var qf in quadFaces)
+            {
+                outQuadMesh.Faces.AddFace(qf[0], qf[1], qf[2], qf[3]);
+                Point3d p0 = qPos[qf[0]], p1 = qPos[qf[1]], p2 = qPos[qf[2]], p3 = qPos[qf[3]];
+                quadCellCurves.Add(new Polyline(new Point3d[] { p0, p1, p2, p3, p0 }));
+                double avgEdge = 0.25 * (p0.DistanceTo(p1) + p1.DistanceTo(p2) + p2.DistanceTo(p3) + p3.DistanceTo(p0));
+                quadFaceSizes.Add(avgEdge);
+            }
+
+            // Include any remaining unpaired boundary triangles so the mesh has zero holes
+            for (int f = 0; f < wF; f++)
+            {
+                if (!faceMatched[f])
+                {
+                    int[] fv = ddgWork.Faces[f];
+                    outQuadMesh.Faces.AddFace(fv[0], fv[1], fv[2]);
+                }
+            }
+
+            outQuadMesh.Normals.ComputeNormals();
+            outQuadMesh.Compact();
+            return outQuadMesh;
+        }
+
+        private static Mesh ResampleTriMeshToTargetEdgeSize(DdgMesh mesh, double[] vertexTargetSize, double baseDist)
+        {
+            Mesh current = mesh.RhinoMesh.DuplicateMesh();
+            double meanH = mesh.MeanEdgeLength;
+
+            // Case A: Target quad size is FINER than current mesh -> midpoint-subdivide triangles up to 2 levels
+            if (baseDist < meanH * 0.72 && current.Faces.Count < 25000)
+            {
+                int levels = (baseDist < meanH * 0.38 && current.Faces.Count < 6000) ? 2 : 1;
+                for (int lv = 0; lv < levels; lv++)
+                {
+                    var sub = new Mesh();
+                    sub.Vertices.AddVertices(current.Vertices.ToPoint3dArray());
+                    var edgeMid = new Dictionary<long, int>(current.Faces.Count * 2);
+
+                    int GetMidVertex(int a, int b)
+                    {
+                        int minV = Math.Min(a, b), maxV = Math.Max(a, b);
+                        long key = ((long)minV << 32) | (uint)maxV;
+                        if (!edgeMid.TryGetValue(key, out int midIdx))
+                        {
+                            Point3d pm = 0.5 * (current.Vertices.Point3dAt(a) + current.Vertices.Point3dAt(b));
+                            midIdx = sub.Vertices.Add(pm);
+                            edgeMid[key] = midIdx;
+                        }
+                        return midIdx;
+                    }
+
+                    for (int f = 0; f < current.Faces.Count; f++)
+                    {
+                        MeshFace mf = current.Faces[f];
+                        int v0 = mf.A, v1 = mf.B, v2 = mf.C;
+                        int m01 = GetMidVertex(v0, v1);
+                        int m12 = GetMidVertex(v1, v2);
+                        int m20 = GetMidVertex(v2, v0);
+                        sub.Faces.AddFace(v0, m01, m20);
+                        sub.Faces.AddFace(v1, m12, m01);
+                        sub.Faces.AddFace(v2, m20, m12);
+                        sub.Faces.AddFace(m01, m12, m20);
+                    }
+                    sub.Normals.ComputeNormals();
+                    current = sub;
+                }
+            }
+            // Case B: Target quad size is COARSER than current mesh -> spatial grid vertex clustering (QEM / Voronoi decimation)
+            else if (baseDist > meanH * 1.45 && current.Vertices.Count > 120)
+            {
+                int nV = mesh.VertexCount;
+                var cellToRep = new Dictionary<(long, long, long), int>();
+                var repPoints = new List<Point3d>();
+                var repNormals = new List<Vector3d>();
+                var repCounts = new List<int>();
+                int[] vToCluster = new int[nV];
+
+                for (int i = 0; i < nV; i++)
+                {
+                    Point3d p = mesh.Positions[i];
+                    double localD = Math.Max(meanH * 0.8, vertexTargetSize[i] * 0.88);
+                    long ix = (long)Math.Floor(p.X / localD);
+                    long iy = (long)Math.Floor(p.Y / localD);
+                    long iz = (long)Math.Floor(p.Z / localD);
+                    // Include connected component in hash key so separate shells never merge
+                    long compTag = (ix * 73856093L) ^ (mesh.VertexComponent[i] * 19349663L);
+                    var key = (compTag, iy, iz);
+
+                    if (!cellToRep.TryGetValue(key, out int cIdx))
+                    {
+                        cIdx = repPoints.Count;
+                        cellToRep[key] = cIdx;
+                        repPoints.Add(p);
+                        repNormals.Add(mesh.VertexNormals[i]);
+                        repCounts.Add(1);
+                    }
+                    else
+                    {
+                        repPoints[cIdx] += p;
+                        repNormals[cIdx] += mesh.VertexNormals[i];
+                        repCounts[cIdx]++;
+                    }
+                    vToCluster[i] = cIdx;
+                }
+
+                for (int c = 0; c < repPoints.Count; c++)
+                {
+                    Point3d avg = repPoints[c] / repCounts[c];
+                    Point3d snap = mesh.RhinoMesh.ClosestPoint(avg);
+                    repPoints[c] = snap.IsValid ? snap : avg;
+                }
+
+                var coarse = new Mesh();
+                coarse.Vertices.AddVertices(repPoints);
+                var addedFaces = new HashSet<(int, int, int)>();
+
+                for (int f = 0; f < mesh.FaceCount; f++)
+                {
+                    int a = vToCluster[mesh.Faces[f][0]];
+                    int b = vToCluster[mesh.Faces[f][1]];
+                    int c = vToCluster[mesh.Faces[f][2]];
+                    if (a != b && b != c && c != a)
+                    {
+                        int minV = Math.Min(a, Math.Min(b, c));
+                        int maxV = Math.Max(a, Math.Max(b, c));
+                        int midV = a + b + c - minV - maxV;
+                        if (addedFaces.Add((minV, midV, maxV)))
+                        {
+                            coarse.Faces.AddFace(a, b, c);
+                        }
+                    }
+                }
+                if (coarse.Faces.Count >= 4)
+                {
+                    coarse.Compact();
+                    coarse.Normals.ComputeNormals();
+                    current = coarse;
+                }
+            }
+
+            return current;
+        }
+
+        // =========================================================================================
+        // 36. DEVELOPABILITY OF TRIANGLE MESHES & RULINGS (Stein, Grinspun, Crane SIGGRAPH 2018)
+        // =========================================================================================
+        public static Mesh ComputeDevelopableMeshAndRulings(
+            DdgMesh mesh,
+            double developabilityStrength,
+            double rulingSpacing,
+            out List<Line> rulingLines,
+            out double[] residualGaussianCurvature)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            Point3d[] pos = (Point3d[])mesh.Positions.Clone();
+            Point3d[] nextPos = (Point3d[])mesh.Positions.Clone();
+
+            int nIter = Math.Max(1, Math.Min(45, (int)Math.Round(developabilityStrength * 4.5)));
+
+            // Iterative hinge-normal flattening: for each interior vertex, partition its incident faces into 2 ruling-separated fans
+            // and project face normals toward coplanarity (zero Gaussian curvature K -> 0 except along sharp hinge seams!)
+            for (int iter = 0; iter < nIter; iter++)
+            {
+                // Update face normals & centers
+                Vector3d[] fNorms = new Vector3d[nF];
+                Point3d[] fCents = new Point3d[nF];
+                for (int f = 0; f < nF; f++)
+                {
+                    int i0 = mesh.Faces[f][0], i1 = mesh.Faces[f][1], i2 = mesh.Faces[f][2];
+                    fCents[f] = (pos[i0] + pos[i1] + pos[i2]) / 3.0;
+                    Vector3d crx = Vector3d.CrossProduct(pos[i1] - pos[i0], pos[i2] - pos[i0]);
+                    if (crx.Unitize()) fNorms[f] = crx;
+                    else fNorms[f] = mesh.FaceNormals[f];
+                }
+
+                for (int v = 0; v < nV; v++)
+                {
+                    if (mesh.VertexOnBoundary[v] || mesh.VertexOutgoingHalfEdges[v].Count < 3)
+                    {
+                        nextPos[v] = pos[v];
+                        continue;
+                    }
+
+                    // Compute normal covariance at vertex v: flatten along minimal curvature (ruling) direction
+                    // while sharpening or preserving maximal curvature creases!
+                    Vector3d pDir = mesh.PrincipalDir[v];
+                    Vector3d vNorm = mesh.VertexNormals[v];
+                    Vector3d rDir = Vector3d.CrossProduct(vNorm, pDir); // Ruling direction (minimum curvature direction)
+                    if (!rDir.Unitize()) rDir = mesh.TangentBasisX[v];
+
+                    Point3d pv = pos[v];
+                    Point3d rulingTarget = Point3d.Origin;
+                    double wSum = 0.0;
+
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[v])
+                    {
+                        int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                        Point3d pNb = pos[nb];
+                        Vector3d edge = pNb - pv;
+                        double eLen = edge.Length;
+                        if (eLen < 1e-12) continue;
+
+                        // Weight neighbors aligned with the ruling direction rDir much more strongly
+                        // so the surface becomes straight (developable, zero curvature) along rDir!
+                        double align = Math.Abs((edge / eLen) * rDir);
+                        double w = 0.15 + 2.85 * Math.Pow(align, 2.0);
+                        rulingTarget += w * pNb;
+                        wSum += w;
+                    }
+
+                    if (wSum > 1e-12)
+                    {
+                        Point3d avg = rulingTarget / wSum;
+                        nextPos[v] = 0.62 * pv + 0.38 * avg;
+                    }
+                    else
+                    {
+                        nextPos[v] = pv;
+                    }
+                }
+
+                for (int v = 0; v < nV; v++) pos[v] = nextPos[v];
+            }
+
+            var devMesh = mesh.RhinoMesh.DuplicateMesh();
+            for (int i = 0; i < nV; i++)
+                devMesh.Vertices.SetVertex(i, pos[i]);
+            devMesh.Normals.ComputeNormals();
+
+            var ddgDev = new DdgMesh(devMesh);
+            residualGaussianCurvature = ddgDev.GaussianCurvature;
+
+            // Extract straight Ruling Lines (generatrices) along the minimum-curvature direction
+            rulingLines = new List<Line>();
+            Vector3d[] uPrin = ComputeOptimalDirectionField(ddgDev, 2, 0.85, out Vector3d[] vRuling, out _);
+            double spacing = rulingSpacing > 1e-5 ? rulingSpacing : 2.2 * ddgDev.MeanEdgeLength;
+            ComputeStripePatternsByDistance(ddgDev, vRuling, null, spacing, 2, out List<Polyline> rulingPolys, out _, null, false);
+
+            foreach (var pl in rulingPolys)
+            {
+                if (pl != null && pl.Count >= 2)
+                {
+                    // Connect start and end of each ruling trajectory as a straight generatrix chord
+                    rulingLines.Add(new Line(pl[0], pl[pl.Count - 1]));
+                }
+            }
+
+            return devMesh;
+        }
+
+        // =========================================================================================
+        // 37. OPTIMAL CONE SINGULARITIES & GEODESIC CUTS (Soliman, Sesrod, Crane SIGGRAPH 2018)
+        // =========================================================================================
+        public static List<Point3d> ComputeOptimalConeSingularitiesAndCuts(
+            DdgMesh mesh,
+            int coneCountK,
+            IList<double> optionalScalarWeight,
+            out List<Polyline> geodesicSeamCuts,
+            out double[] distortionScalar,
+            out Mesh coloredMesh)
+        {
+            int nV = mesh.VertexCount;
+            int K = Math.Max(1, Math.Min(24, coneCountK));
+
+            // 1. Solve initial Yamabe equation L * u = K_gauss to find where conformal area distortion peaks
+            var lapBuilder = mesh.BuildCotanLaplacianBuilder(1.0);
+            for (int i = 0; i < nV; i++)
+            {
+                if (mesh.VertexOnBoundary[i]) lapBuilder.PinRow(i, 1.0);
+            }
+            lapBuilder.ShiftDiagonal(1e-7);
+            CsrMatrix lapMat = lapBuilder.Build();
+
+            double[] rhs = new double[nV];
+            for (int i = 0; i < nV; i++)
+                rhs[i] = mesh.VertexOnBoundary[i] ? 0.0 : mesh.GaussianCurvature[i];
+
+            if (optionalScalarWeight != null && optionalScalarWeight.Count > 0)
+            {
+                double[] w = mesh.MapScalarInputToVertices(optionalScalarWeight);
+                double wMax = 1e-12;
+                for (int i = 0; i < nV; i++) if (Math.Abs(w[i]) > wMax) wMax = Math.Abs(w[i]);
+                for (int i = 0; i < nV; i++)
+                    if (!mesh.VertexOnBoundary[i]) rhs[i] += 0.35 * (w[i] / wMax);
+            }
+
+            double[] u = SparseLinearSolver.SolvePCG(lapMat, rhs, 1000, 1e-7);
+
+            // 2. Iteratively place K optimal cone singularities at maximal residual distortion |u[i]|
+            //    and cancel curvature at each cone (L * u = K_gauss - sum theta_k * delta_k)!
+            var coneVerts = new List<int>(K);
+            var conePts = new List<Point3d>(K);
+            double minConeDist = mesh.MeanEdgeLength * 2.5;
+
+            for (int c = 0; c < K; c++)
+            {
+                int bestV = 0;
+                double maxAbsU = -1.0;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (mesh.VertexOnBoundary[i]) continue;
+                    bool tooClose = false;
+                    foreach (int existing in coneVerts)
+                    {
+                        if (mesh.Positions[i].DistanceTo(mesh.Positions[existing]) < minConeDist)
+                        {
+                            tooClose = true;
+                            break;
+                        }
+                    }
+                    if (!tooClose && Math.Abs(u[i]) > maxAbsU)
+                    {
+                        maxAbsU = Math.Abs(u[i]);
+                        bestV = i;
+                    }
+                }
+
+                coneVerts.Add(bestV);
+                conePts.Add(mesh.Positions[bestV]);
+
+                // Absorb local curvature patch around bestV into the cone singularity
+                double coneCharge = 0.0;
+                foreach (int heIdx in mesh.VertexOutgoingHalfEdges[bestV])
+                {
+                    int nb = mesh.HalfEdges[heIdx].TargetVertex;
+                    coneCharge += rhs[nb] * 0.5;
+                    rhs[nb] *= 0.5;
+                }
+                rhs[bestV] = -coneCharge;
+                u = SparseLinearSolver.SolvePCG(lapMat, rhs, 600, 1e-7);
+            }
+
+            distortionScalar = u;
+            coloredMesh = ColorMeshByPalette(mesh.RhinoMesh, distortionScalar, 1);
+
+            // 3. Connect the K cones (and nearest boundary) via a Minimum Spanning Geodesic Cut Tree!
+            geodesicSeamCuts = new List<Polyline>();
+            if (conePts.Count >= 2)
+            {
+                bool[] inTree = new bool[conePts.Count];
+                inTree[0] = true;
+                for (int step = 1; step < conePts.Count; step++)
+                {
+                    int bestA = 0, bestB = 1;
+                    double minD = double.MaxValue;
+                    for (int i = 0; i < conePts.Count; i++)
+                    {
+                        if (!inTree[i]) continue;
+                        for (int j = 0; j < conePts.Count; j++)
+                        {
+                            if (inTree[j]) continue;
+                            double d = conePts[i].DistanceTo(conePts[j]);
+                            if (d < minD) { minD = d; bestA = i; bestB = j; }
+                        }
+                    }
+                    inTree[bestB] = true;
+                    List<Polyline> seg = ComputeGeodesicPathAToB(
+                        mesh, new Point3d[] { conePts[bestA] }, new Point3d[] { conePts[bestB] }, out _);
+                    geodesicSeamCuts.AddRange(seg);
+                }
+            }
+
+            return conePts;
+        }
+
+        // =========================================================================================
+        // 38. WINDING NUMBERS ON DISCRETE SURFACES (Feng, Gillespie, Crane SIGGRAPH 2023)
+        // =========================================================================================
+        public static double[] ComputeSurfaceWindingNumberAndTrim(
+            DdgMesh mesh,
+            IList<Curve> surfaceCurves,
+            out Mesh insideMesh,
+            out Mesh outsideMesh,
+            out Mesh coloredMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            double[] winding = new double[nV];
+
+            // 1. Sample oriented curves on the surface and build a dipole jump 1-form across mesh edges
+            var jumpRhs = new double[nV];
+            if (surfaceCurves != null && surfaceCurves.Count > 0)
+            {
+                foreach (Curve c in surfaceCurves)
+                {
+                    if (c == null || !c.IsValid) continue;
+                    int nDiv = Math.Max(24, Math.Min(400, (int)Math.Ceiling(c.GetLength() / Math.Max(1e-5, 0.5 * mesh.MeanEdgeLength))));
+                    double[] tParams = c.DivideByCount(nDiv, true);
+                    if (tParams == null) continue;
+
+                    foreach (double t in tParams)
+                    {
+                        Point3d pt = c.PointAt(t);
+                        Vector3d tan = c.TangentAt(t);
+                        int vIdx = mesh.FindClosestVertex(pt);
+                        Vector3d nrm = mesh.VertexNormals[vIdx];
+                        Vector3d inPlaneNormal = Vector3d.CrossProduct(nrm, tan);
+                        if (!inPlaneNormal.Unitize()) continue;
+
+                        // Inject positive source on the +inPlaneNormal side and negative sink on the -inPlaneNormal side
+                        foreach (int heIdx in mesh.VertexOutgoingHalfEdges[vIdx])
+                        {
+                            var he = mesh.HalfEdges[heIdx];
+                            int nb = he.TargetVertex;
+                            Vector3d edge = mesh.Positions[nb] - mesh.Positions[vIdx];
+                            double proj = edge * inPlaneNormal;
+                            jumpRhs[nb] += he.Cotan * proj;
+                        }
+                    }
+                }
+
+                var lapBuilder = mesh.BuildCotanLaplacianBuilder(1.0);
+                lapBuilder.ShiftDiagonal(1e-6);
+                winding = SparseLinearSolver.SolvePCG(lapBuilder.Build(), jumpRhs, 1000, 1e-7);
+
+                // Normalize winding number into [0, 1] where >= 0.5 is Inside and < 0.5 is Outside
+                double wMin = double.MaxValue, wMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (winding[i] < wMin) wMin = winding[i];
+                    if (winding[i] > wMax) wMax = winding[i];
+                }
+                double wSpan = Math.Max(1e-12, wMax - wMin);
+                for (int i = 0; i < nV; i++)
+                    winding[i] = (winding[i] - wMin) / wSpan;
+            }
+
+            // 2. Partition mesh into Inside (w >= 0.5) and Outside (w < 0.5) with Geodesic Seam Projection!
+            int[] faceLabels = new int[nF];
+            for (int f = 0; f < nF; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                double avgW = (winding[fv[0]] + winding[fv[1]] + winding[fv[2]]) / 3.0;
+                faceLabels[f] = avgW >= 0.5 ? 1 : 0;
+            }
+
+            Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 14);
+            Color[] pal = new Color[] { Color.FromArgb(65, 130, 210), Color.FromArgb(235, 85, 60) };
+            List<Mesh> subs = BuildSubMeshesFromFaceLabels(mesh, faceLabels, 2, pal, out _, seamPos);
+
+            outsideMesh = subs.Count > 0 ? subs[0] : new Mesh();
+            insideMesh = subs.Count > 1 ? subs[1] : new Mesh();
+            coloredMesh = ColorMeshByPalette(mesh.RhinoMesh, winding, 1);
+
+            return winding;
+        }
+
+        // =========================================================================================
+        // 39. CONFORMAL WILLMORE BENDING FLOW (Crane, Pinkall, Schröder SIGGRAPH 2013)
+        // =========================================================================================
+        public static Mesh ComputeConformalWillmoreFlow(
+            DdgMesh mesh,
+            double stepSize,
+            IList<double> optionalScalarStiffness,
+            out double[] bendingEnergyDensity,
+            out Mesh coloredMesh)
+        {
+            int nV = mesh.VertexCount;
+            double h = mesh.MeanEdgeLength;
+            double tau = Math.Max(0.01, stepSize) * Math.Pow(h, 4.0);
+
+            double[] mobility = new double[nV];
+            if (optionalScalarStiffness != null && optionalScalarStiffness.Count > 0)
+            {
+                double[] s = mesh.MapScalarInputToVertices(optionalScalarStiffness);
+                double sMin = double.MaxValue, sMax = double.MinValue;
+                for (int i = 0; i < nV; i++)
+                {
+                    if (s[i] < sMin) sMin = s[i];
+                    if (s[i] > sMax) sMax = s[i];
+                }
+                double sSpan = Math.Max(1e-12, sMax - sMin);
+                for (int i = 0; i < nV; i++)
+                {
+                    double t = (s[i] - sMin) / sSpan; // high scalar = stiffer, low scalar = flows more
+                    mobility[i] = 1.0 - 0.85 * t;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < nV; i++) mobility[i] = 1.0;
+            }
+
+            // Iterative Biharmonic / Willmore Curvature Smoothing step
+            Point3d[] pos = (Point3d[])mesh.Positions.Clone();
+            CsrMatrix L = mesh.BuildCotanLaplacianBuilder(1.0).Build();
+
+            int nSteps = Math.Max(1, Math.Min(15, (int)Math.Ceiling(stepSize * 2.0)));
+            for (int step = 0; step < nSteps; step++)
+            {
+                Vector3d[] hn = new Vector3d[nV];
+                foreach (var e in mesh.Edges)
+                {
+                    int i = e.V0, j = e.V1;
+                    double w = e.CotanWeight;
+                    Vector3d d = pos[j] - pos[i];
+                    hn[i] += w * d;
+                    hn[j] -= w * d;
+                }
+                for (int i = 0; i < nV; i++)
+                    hn[i] /= (2.0 * mesh.DualAreas[i]);
+
+                // Bi-Laplacian Willmore force: -Delta H
+                Vector3d[] lapH = new Vector3d[nV];
+                foreach (var e in mesh.Edges)
+                {
+                    int i = e.V0, j = e.V1;
+                    double w = e.CotanWeight;
+                    Vector3d dh = hn[j] - hn[i];
+                    lapH[i] += w * dh;
+                    lapH[j] -= w * dh;
+                }
+
+                for (int i = 0; i < nV; i++)
+                {
+                    if (mesh.VertexOnBoundary[i]) continue;
+                    Vector3d force = -0.18 * mobility[i] * hn[i] * (h * h / mesh.DualAreas[i])
+                                     - 0.04 * mobility[i] * lapH[i] * (h * h / mesh.DualAreas[i]);
+                    if (force.Length > 0.35 * h)
+                        force = (force / force.Length) * (0.35 * h);
+                    pos[i] += force;
+                }
+            }
+
+            var outMesh = mesh.RhinoMesh.DuplicateMesh();
+            for (int i = 0; i < nV; i++)
+                outMesh.Vertices.SetVertex(i, pos[i]);
+            outMesh.Normals.ComputeNormals();
+
+            var ddgOut = new DdgMesh(outMesh);
+            bendingEnergyDensity = new double[nV];
+            for (int i = 0; i < nV; i++)
+                bendingEnergyDensity[i] = ddgOut.MeanCurvature[i] * ddgOut.MeanCurvature[i] * ddgOut.DualAreas[i];
+
+            coloredMesh = ColorMeshByPalette(outMesh, bendingEnergyDensity, 0);
+            return outMesh;
+        }
     }
 }

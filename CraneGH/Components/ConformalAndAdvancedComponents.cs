@@ -618,4 +618,332 @@ namespace CraneGH.Components
 
         public override Guid ComponentGuid => new Guid("A107B207-C307-4D07-9E07-000000000047");
     }
+
+    // =========================================================================================
+    // 05. REMESH & ADVANCED DDG (Minimal Inputs, Scalar+Vector Mixing, Distance Quad Remesh)
+    // =========================================================================================
+
+    public class GH_FieldAlignedQuadRemesh : GH_Component
+    {
+        private Mesh _quadMesh;
+        private readonly List<Line> _wireLines = new List<Line>();
+
+        public GH_FieldAlignedQuadRemesh()
+          : base("Field & Distance Quad Remesh", "QuadRemesh",
+              "Quad-remeshes a 3D surface controlling the exact Quad Face Distance D (single number = equidistant quads, or Scalar Field = weighted quad density) aligned with a Vector/Cross Field.",
+              "CraneGH", "05. Remesh & Advanced DDG")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("QuadRemesh");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            int idxV = pManager.AddVectorParameter("Direction Field", "V", "Optional tangent Vector Field to align quad edges (if empty, auto-computes Optimal Principal Cross Field)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            int idxD = pManager.AddNumberParameter("Face Distance or Weights", "D", "Single number = Equidistant quad face size D (0 = auto); Scalar Field list = Weighted quad face size per vertex", GH_ParamAccess.list, new List<double> { 0.0 });
+            pManager[idxD].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Quad Mesh", "QM", "Field-aligned Quad Mesh with controlled face distance", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Quad Cells", "QC", "Closed 4-sided quad cell polylines", GH_ParamAccess.list);
+            pManager.AddCurveParameter("U-V Grid Curves", "G", "Orthogonal U and V quad grid curves on the surface", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Face Sizes", "S", "Measured average edge distance per quad face", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _quadMesh = null;
+            _wireLines.Clear();
+
+            Mesh m = null;
+            var vecField = new List<Vector3d>();
+            var distOrWeights = new List<double>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, vecField);
+            DA.GetDataList(2, distOrWeights);
+
+            var ddg = new DdgMesh(m);
+            _quadMesh = DdgAlgorithms.ComputeFieldAlignedQuadRemesh(
+                ddg,
+                vecField.Count > 0 ? vecField : null,
+                distOrWeights.Count > 0 ? distOrWeights : null,
+                out List<Polyline> quadCells,
+                out List<Polyline> uvGridCurves,
+                out List<double> faceSizes);
+
+            if (quadCells != null)
+            {
+                foreach (var q in quadCells)
+                {
+                    for (int i = 0; i < q.Count - 1; i++)
+                        _wireLines.Add(new Line(q[i], q[i + 1]));
+                }
+            }
+
+            DA.SetData(0, _quadMesh);
+            DA.SetDataList(1, quadCells);
+            DA.SetDataList(2, uvGridCurves);
+            DA.SetDataList(3, faceSizes);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _wireLines.Count == 0) return;
+            args.Display.DrawLines(_wireLines, Color.FromArgb(215, 0, 215, 255), 1);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000055");
+    }
+
+    public class GH_DevelopableMeshStrip : GH_Component
+    {
+        private Mesh _devMesh;
+        private readonly List<Line> _rulings = new List<Line>();
+
+        public GH_DevelopableMeshStrip()
+          : base("Developable Mesh & Rulings", "Developable",
+              "Optimizes a 3D mesh toward piecewise developable strips (Gaussian curvature K -> 0) and extracts straight ruling lines (Stein, Grinspun, Crane SIGGRAPH 2018).",
+              "CraneGH", "05. Remesh & Advanced DDG")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("Developable");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Strength", "S", "Developability hinge-flattening strength [0..1]", GH_ParamAccess.item, 0.75);
+            pManager.AddNumberParameter("Ruling Spacing", "D", "Distance between extracted straight ruling lines (0 = auto)", GH_ParamAccess.item, 0.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Developable Mesh", "DM", "Developable-optimized 3D mesh colored by residual Gaussian curvature", GH_ParamAccess.item);
+            pManager.AddLineParameter("Ruling Lines", "R", "Straight ruling lines along zero-curvature directions", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Gaussian Curvature", "K", "Residual discrete Gaussian curvature per vertex", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _devMesh = null;
+            _rulings.Clear();
+
+            Mesh m = null;
+            double strength = 0.75;
+            double spacing = 0.0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref strength);
+            DA.GetData(2, ref spacing);
+
+            var ddg = new DdgMesh(m);
+            _devMesh = DdgAlgorithms.ComputeDevelopableMeshAndRulings(
+                ddg, strength, spacing, out List<Line> rulingLines, out double[] kRes);
+
+            _rulings.AddRange(rulingLines);
+
+            DA.SetData(0, _devMesh);
+            DA.SetDataList(1, rulingLines);
+            DA.SetDataList(2, kRes);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _rulings.Count == 0) return;
+            args.Display.DrawLines(_rulings, Color.FromArgb(235, 255, 200, 40), 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000056");
+    }
+
+    public class GH_OptimalConeSingularities : GH_Component
+    {
+        private Mesh _coloredMesh;
+        private readonly List<Point3d> _cones = new List<Point3d>();
+        private readonly List<Line> _cutSegments = new List<Line>();
+
+        public GH_OptimalConeSingularities()
+          : base("Optimal Cone Singularities & Cuts", "OptimalCones",
+              "Finds optimal cone singularities and minimal geodesic seam cuts that minimize conformal flattening distortion (Soliman, Sesrod, Crane SIGGRAPH 2018).",
+              "CraneGH", "05. Remesh & Advanced DDG")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("OptimalCones");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Cone Count", "K", "Number of optimal cone singularities to place", GH_ParamAccess.item, 4);
+            int idxS = pManager.AddNumberParameter("Scalar Weight", "S", "Optional Scalar Field weights to attract/repel cones", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddPointParameter("Cone Points", "P", "Optimal cone singularity points on the surface", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Geodesic Seam Cuts", "C", "Minimal tree of geodesic seam cuts connecting cones to the boundary", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Distortion Scalar", "U", "Logarithmic conformal scale distortion factor per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by conformal distortion scalar", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _coloredMesh = null;
+            _cones.Clear();
+            _cutSegments.Clear();
+
+            Mesh m = null;
+            int coneCount = 4;
+            var weights = new List<double>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref coneCount);
+            DA.GetDataList(2, weights);
+
+            var ddg = new DdgMesh(m);
+            List<Point3d> conePts = DdgAlgorithms.ComputeOptimalConeSingularitiesAndCuts(
+                ddg, coneCount, weights.Count > 0 ? weights : null,
+                out List<Polyline> seamCuts, out double[] uDistortion, out _coloredMesh);
+
+            _cones.AddRange(conePts);
+            foreach (var pl in seamCuts)
+            {
+                for (int i = 0; i < pl.Count - 1; i++)
+                    _cutSegments.Add(new Line(pl[i], pl[i + 1]));
+            }
+
+            DA.SetDataList(0, conePts);
+            DA.SetDataList(1, seamCuts);
+            DA.SetDataList(2, uDistortion);
+            DA.SetData(3, _coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+            if (_cutSegments.Count > 0)
+                args.Display.DrawLines(_cutSegments, Color.FromArgb(255, 0, 245, 200), 3);
+            if (_cones.Count > 0)
+                args.Display.DrawPoints(_cones, Rhino.Display.PointStyle.RoundControlPoint, 6, Color.Gold);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000057");
+    }
+
+    public class GH_SurfaceWindingNumber : GH_Component
+    {
+        private Mesh _coloredMesh;
+
+        public GH_SurfaceWindingNumber()
+          : base("Surface Winding Number & Trim", "SurfWinding",
+              "Computes the exact Piecewise-Constant Winding Number Scalar Field on a mesh from open/broken curves and trims Inside/Outside regions (Feng, Gillespie, Crane SIGGRAPH 2023).",
+              "CraneGH", "05. Remesh & Advanced DDG")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("SurfWinding");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Surface Curves", "C", "Closed, open, or broken curves on/near the mesh defining the region boundary", GH_ParamAccess.list);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Inside Mesh", "IM", "Trimmed inside surface region (W >= 0.5)", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Outside Mesh", "OM", "Trimmed outside surface region (W < 0.5)", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Winding Scalar", "W", "Surface winding number scalar field [0..1] per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the surface winding number field", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _coloredMesh = null;
+
+            Mesh m = null;
+            var crvs = new List<Curve>();
+            if (!DA.GetData(0, ref m) || m == null) return;
+            if (!DA.GetDataList(1, crvs) || crvs.Count == 0) return;
+
+            var ddg = new DdgMesh(m);
+            double[] winding = DdgAlgorithms.ComputeSurfaceWindingNumberAndTrim(
+                ddg, crvs, out Mesh insideMesh, out Mesh outsideMesh, out _coloredMesh);
+
+            DA.SetData(0, insideMesh);
+            DA.SetData(1, outsideMesh);
+            DA.SetDataList(2, winding);
+            DA.SetData(3, _coloredMesh);
+        }
+
+        public override void DrawViewportMeshes(IGH_PreviewArgs args)
+        {
+            base.DrawViewportMeshes(args);
+            if (Hidden || Locked || _coloredMesh == null) return;
+            args.Display.DrawMeshFalseColors(_coloredMesh);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000058");
+    }
+
+    public class GH_ConformalWillmoreFlow : GH_Component
+    {
+        private Mesh _fairMesh;
+
+        public GH_ConformalWillmoreFlow()
+          : base("Conformal Willmore Bending Flow", "WillmoreFlow",
+              "Smooths and fairs 3D surfaces by minimizing Willmore bending energy (integral of H^2) with optional Scalar Field stiffness weights (Crane, Pinkall, Schröder SIGGRAPH 2013).",
+              "CraneGH", "05. Remesh & Advanced DDG")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("WillmoreFlow");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Step", "T", "Willmore bending fairing step strength [0..1]", GH_ParamAccess.item, 0.5);
+            int idxS = pManager.AddNumberParameter("Scalar Stiffness", "S", "Optional Scalar Field weights per vertex (high = locked/stiff, low = free to smooth)", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Fair Mesh", "WM", "Willmore-faired 3D mesh minimizing bending energy", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Bending Energy", "E", "Local Willmore bending energy density H^2 per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Willmore bending energy", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _fairMesh = null;
+
+            Mesh m = null;
+            double step = 0.5;
+            var weights = new List<double>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref step);
+            DA.GetDataList(2, weights);
+
+            var ddg = new DdgMesh(m);
+            _fairMesh = DdgAlgorithms.ComputeConformalWillmoreFlow(
+                ddg, step, weights.Count > 0 ? weights : null, out double[] energy, out Mesh coloredMesh);
+
+            DA.SetData(0, _fairMesh);
+            DA.SetDataList(1, energy);
+            DA.SetData(2, coloredMesh);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000059");
+    }
 }

@@ -75,6 +75,14 @@ namespace CraneGH.Core
                     case "CleanCloud": DrawCleanCloud(g); break;
                     case "MCFlow": DrawMCFlow(g); break;
 
+                    // 05. Remesh & Advanced DDG + FieldMix
+                    case "FieldMix": DrawFieldMix(g); break;
+                    case "QuadRemesh": DrawQuadRemesh(g); break;
+                    case "Developable": DrawDevelopable(g); break;
+                    case "OptimalCones": DrawOptimalCones(g); break;
+                    case "SurfWinding": DrawSurfWinding(g); break;
+                    case "WillmoreFlow": DrawWillmoreFlow(g); break;
+
                     // Additional active & legacy keys
                     case "OptField": DrawOptField(g); break;
                     case "CrvStripes": DrawCrvStripes(g); break;
@@ -699,6 +707,89 @@ namespace CraneGH.Core
             using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
                 g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
             g.FillEllipse(Brushes.Gold, 10.2f, 10.2f, 3.6f, 3.6f);
+        }
+
+        // FieldMix: Scalar Heat Gradient Disc + Weighted Vector Arrows
+        private static void DrawFieldMix(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(235, 70, 45), Color.FromArgb(30, 115, 215));
+            using (var ringPen = new Pen(Color.FromArgb(110, 255, 255, 255), 1.1f))
+                g.DrawEllipse(ringPen, 5.5f, 5.5f, 13f, 13f);
+            using (var vPen = new Pen(Color.FromArgb(255, 255, 215, 60), 2.0f))
+            {
+                DrawArrow(g, vPen, 5, 16, 13, 12);
+                DrawArrow(g, vPen, 8, 9, 19, 6);
+                DrawArrow(g, vPen, 11, 19, 19, 15);
+            }
+        }
+
+        // QuadRemesh: Crisp 4-sided Quad Mesh Grid with adaptive cell sizing
+        private static void DrawQuadRemesh(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(20, 38, 60), Color.FromArgb(12, 22, 38));
+            using (var qFill = new SolidBrush(Color.FromArgb(75, 0, 215, 255)))
+                g.FillRectangle(qFill, 5f, 5f, 14f, 14f);
+            using (var qPen = new Pen(Color.FromArgb(0, 235, 255), 1.5f))
+            {
+                float[] xs = { 5f, 9.2f, 14.2f, 19f };
+                float[] ys = { 5f, 9.2f, 14.2f, 19f };
+                foreach (float x in xs) g.DrawLine(qPen, x, 5f, x, 19f);
+                foreach (float y in ys) g.DrawLine(qPen, 5f, y, 19f, y);
+            }
+            g.FillEllipse(Brushes.Gold, 7.6f, 7.6f, 3.0f, 3.0f);
+        }
+
+        // Developable: Curved ribbon strip + straight golden ruling lines
+        private static void DrawDevelopable(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(32, 42, 58), Color.FromArgb(18, 24, 34));
+            using (var surfPen = new Pen(Color.FromArgb(0, 225, 195), 2.0f))
+            {
+                g.DrawBezier(surfPen, new PointF(4, 7), new PointF(10, 3), new PointF(15, 9), new PointF(20, 6));
+                g.DrawBezier(surfPen, new PointF(4, 18), new PointF(10, 14), new PointF(15, 20), new PointF(20, 17));
+            }
+            using (var rulePen = new Pen(Color.FromArgb(255, 205, 55), 1.5f))
+            {
+                g.DrawLine(rulePen, 5, 7, 5, 18);
+                g.DrawLine(rulePen, 9.5f, 5.5f, 9.5f, 16.5f);
+                g.DrawLine(rulePen, 14.5f, 7.5f, 14.5f, 18.5f);
+                g.DrawLine(rulePen, 19, 6.5f, 19, 17.5f);
+            }
+        }
+
+        // OptimalCones: Golden Cone Singularities + Cyan Geodesic Steiner Seam Cut Tree
+        private static void DrawOptimalCones(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(35, 28, 56), Color.FromArgb(20, 16, 36));
+            using (var cutPen = new Pen(Color.FromArgb(0, 245, 205), 2.1f))
+            {
+                g.DrawLine(cutPen, 7, 7, 12, 13);
+                g.DrawLine(cutPen, 17, 8, 12, 13);
+                g.DrawLine(cutPen, 12, 13, 12, 21.5f);
+            }
+            g.FillEllipse(Brushes.Gold, 4.8f, 4.8f, 4.4f, 4.4f);
+            g.FillEllipse(Brushes.Gold, 14.8f, 5.8f, 4.4f, 4.4f);
+            g.FillEllipse(Brushes.DeepSkyBlue, 10.0f, 11.0f, 4.0f, 4.0f);
+        }
+
+        // SurfWinding: Inside (Warm Red-Orange W=1) vs Outside (Deep Blue W=0) separated by dashed curve
+        private static void DrawSurfWinding(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(35, 95, 195), Color.FromArgb(20, 55, 125));
+            using (var inBrush = new SolidBrush(Color.FromArgb(235, 85, 55)))
+                g.FillEllipse(inBrush, 6.0f, 6.0f, 12.0f, 12.0f);
+            using (var crvPen = new Pen(Color.White, 2.0f) { DashStyle = DashStyle.Dash })
+                g.DrawEllipse(crvPen, 6.0f, 6.0f, 12.0f, 12.0f);
+        }
+
+        // WillmoreFlow: High-curvature wave relaxing into an ultra-fair minimal-bending cyan arch
+        private static void DrawWillmoreFlow(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(38, 26, 54), Color.FromArgb(20, 14, 32));
+            using (var roughPen = new Pen(Color.FromArgb(150, 255, 95, 85), 1.3f))
+                g.DrawBezier(roughPen, new PointF(3, 17), new PointF(8, 3), new PointF(16, 21), new PointF(21, 7));
+            using (var fairPen = new Pen(Color.FromArgb(0, 240, 215), 2.4f))
+                g.DrawBezier(fairPen, new PointF(3, 16), new PointF(9, 7), new PointF(15, 7), new PointF(21, 16));
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)
