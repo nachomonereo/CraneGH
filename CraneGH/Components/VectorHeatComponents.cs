@@ -11,8 +11,8 @@ namespace CraneGH.Components
     {
         public GH_VectorParallelTransport()
           : base("Vector Parallel Transport", "VecHeat",
-              "Parallel-transports tangent vectors across a curved mesh using Keenan Crane's Vector Heat Method (ACM TOG 2019).",
-              "CraneGH", "03. Vector & Direction Fields")
+              "Parallel-transports tangent vectors across a curved mesh using Keenan Crane's Vector Heat Method.",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
@@ -60,7 +60,7 @@ namespace CraneGH.Components
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.secondary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("LogMap");
 
@@ -108,7 +108,7 @@ namespace CraneGH.Components
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.secondary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("DecalMap");
 

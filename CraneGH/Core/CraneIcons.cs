@@ -6,9 +6,8 @@ using System.Drawing.Drawing2D;
 namespace CraneGH.Core
 {
     /// <summary>
-    /// Procedural 24x24 anti-aliased icon renderer designed in Keenan Crane's signature visual style
-    /// (Heat Method crimson-gold isolines, Trivial Connections red singularity + blue ticks,
-    /// Stripe Patterns Y-bifurcation zebra stripes, FlipOut blue-gold mesh, Polyscope segmentation palettes).
+    /// Procedural 24x24 anti-aliased icon renderer with a unique, high-contrast visual logo
+    /// for every single component in CraneGH.
     /// </summary>
     public static class CraneIcons
     {
@@ -39,47 +38,65 @@ namespace CraneGH.Core
 
                 switch (key)
                 {
-                    case "Curvatures": DrawCurvatures(g); break;
-                    case "MCFlow": DrawMCFlow(g); break;
-                    case "GradLap": DrawGradLap(g); break;
-                    case "Harmonic": DrawHarmonic(g); break;
-                    case "HeatDist": DrawHeatDist(g); break;
-                    case "IsoCrvs": DrawIsoCrvs(g); break;
-                    case "GeoPath": DrawGeoPath(g); break;
-                    case "VecHeat": DrawVecHeat(g); break;
-                    case "LogMap": DrawLogMap(g); break;
-                    case "DecalMap": DrawDecalMap(g); break;
-                    case "OptField": DrawOptField(g); break;
-                    case "TrivConn": DrawTrivConn(g); break;
-                    case "Streamlines": DrawStreamlines(g); break;
-                    case "Stripes": DrawStripes(g); break;
-                    case "CrvStripes": DrawCrvStripes(g); break;
-                    case "SpinXForm": DrawSpinXForm(g); break;
-                    case "BFF": DrawBFF(g); break;
-                    case "Auxetics": DrawAuxetics(g); break;
-                    case "FlipOut": DrawFlipOut(g); break;
-                    case "RepCurve": DrawRepCurve(g); break;
-                    case "WoS": DrawWoS(g); break;
-                    case "SubgridTet": DrawSubgridTet(g); break;
-                    case "SharpEdges": DrawSharpEdges(g); break;
-                    case "FeatHeat": DrawFeatHeat(g); break;
-                    case "MeshSeg": DrawMeshSeg(g); break;
-                    case "CrossField": DrawCrossField(g); break;
-                    case "CrossQuads": DrawCrossQuads(g); break;
-                    case "VarCuts": DrawVarCuts(g); break;
-                    case "SmoothScalar": DrawSmoothScalar(g); break;
-                    case "SmoothField": DrawSmoothField(g); break;
-                    case "VecView": DrawVecView(g); break;
+                    // 01. Visualizers
                     case "ScalarView": DrawScalarView(g); break;
-                    case "WalkOnMesh": DrawWalkOnMesh(g); break;
+                    case "GradView": DrawGradView(g); break;
+                    case "VecView": DrawVecView(g); break;
+                    case "CrossView": DrawCrossView(g); break;
+
+                    // 02. Scalar & Geodesics
+                    case "Curvatures": DrawCurvatures(g); break;
+                    case "SmoothScalar": DrawSmoothScalar(g); break;
+                    case "HeatDist": DrawHeatDist(g); break;
                     case "IsoCut": DrawIsoCut(g); break;
-                    case "VecFamily": DrawVecFamily(g); break;
-                    case "RollSphere": DrawRollSphere(g); break;
+                    case "GeoPath": DrawGeoPath(g); break;
+                    case "FlipOut": DrawFlipOut(g); break;
+
+                    // 03. Vector Fields & Stripes
+                    case "RotateVec": DrawRotateVec(g); break;
+                    case "SmoothField": DrawSmoothField(g); break;
+                    case "CrossField": DrawCrossField(g); break;
+                    case "VecHeat": DrawVecHeat(g); break;
+                    case "WalkOnMesh": DrawWalkOnMesh(g); break;
+                    case "GuidedFlow": DrawGuidedFlow(g); break;
+                    case "Stripes": DrawStripes(g); break;
+                    case "VarStripes": DrawVarStripes(g); break;
+
+                    // 04. Segmentation & Fabrication
                     case "KMeansSeg": DrawKMeansSeg(g); break;
+                    case "CurvSeg": DrawCurvSeg(g); break;
+                    case "ScalarSeg": DrawScalarSeg(g); break;
+                    case "VecFamily": DrawVecFamily(g); break;
                     case "MoldParting": DrawMoldParting(g); break;
                     case "MillingPaths": DrawMillingPaths(g); break;
+                    case "RollSphere": DrawRollSphere(g); break;
                     case "IsoBoxSub": DrawIsoBoxSub(g); break;
-                    case "GeoTSP": DrawGeoTSP(g); break;
+                    case "Skeleton": DrawSkeleton(g); break;
+                    case "CleanCloud": DrawCleanCloud(g); break;
+                    case "MCFlow": DrawMCFlow(g); break;
+
+                    // Legacy / Hidden keys
+                    case "GradLap": DrawGradView(g); break;
+                    case "Harmonic": DrawScalarView(g); break;
+                    case "IsoCrvs": DrawIsoCut(g); break;
+                    case "LogMap": DrawCrossView(g); break;
+                    case "DecalMap": DrawCrossView(g); break;
+                    case "OptField": DrawCrossField(g); break;
+                    case "TrivConn": DrawCrossView(g); break;
+                    case "Streamlines": DrawGuidedFlow(g); break;
+                    case "CrvStripes": DrawVarStripes(g); break;
+                    case "SpinXForm": DrawCurvatures(g); break;
+                    case "BFF": DrawScalarView(g); break;
+                    case "Auxetics": DrawCrossField(g); break;
+                    case "RepCurve": DrawFlipOut(g); break;
+                    case "WoS": DrawCleanCloud(g); break;
+                    case "SubgridTet": DrawIsoBoxSub(g); break;
+                    case "SharpEdges": DrawKMeansSeg(g); break;
+                    case "FeatHeat": DrawHeatDist(g); break;
+                    case "MeshSeg": DrawKMeansSeg(g); break;
+                    case "CrossQuads": DrawCrossField(g); break;
+                    case "VarCuts": DrawCurvSeg(g); break;
+                    case "GeoTSP": DrawMillingPaths(g); break;
                     default: DrawHeatDist(g); break;
                 }
             }
@@ -92,215 +109,304 @@ namespace CraneGH.Core
             {
                 g.FillEllipse(brush, 1.5f, 1.5f, 21f, 21f);
             }
-            using (var pen = new Pen(Color.FromArgb(180, 30, 30, 35), 1.0f))
+            using (var pen = new Pen(Color.FromArgb(200, 20, 24, 30), 1.1f))
             {
                 g.DrawEllipse(pen, 1.5f, 1.5f, 21f, 21f);
             }
         }
 
-        // 01. Discrete Curvatures
+        // =========================================================================
+        // 01. VISUALIZERS
+        // =========================================================================
+
+        // ScalarView: Heatmap disc + white iso-arcs + vertical color bar
+        private static void DrawScalarView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(25, 55, 145), Color.FromArgb(245, 85, 35));
+            using (var isoPen = new Pen(Color.FromArgb(230, 255, 245, 190), 1.3f))
+            {
+                g.DrawArc(isoPen, 4, 4, 15, 15, 195, 145);
+                g.DrawArc(isoPen, 6.5f, 6.5f, 11, 11, 195, 145);
+            }
+            using (var barBrush = new LinearGradientBrush(new RectangleF(17.5f, 4f, 3.5f, 16f), Color.Yellow, Color.Crimson, 90f))
+            {
+                g.FillRectangle(barBrush, 17.5f, 4f, 3.5f, 16f);
+                g.DrawRectangle(Pens.White, 17, 4, 4, 16);
+            }
+        }
+
+        // GradView: Warm slope disc + cyan gradient segments + white orthogonal wavefront ticks
+        private static void DrawGradView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(145, 25, 45), Color.FromArgb(30, 45, 85));
+            using (var wfPen = new Pen(Color.FromArgb(190, 255, 230, 140), 1.2f))
+            {
+                g.DrawArc(wfPen, 4, 4, 16, 16, 205, 130);
+                g.DrawArc(wfPen, 7, 7, 12, 12, 205, 130);
+            }
+            using (var gradPen = new Pen(Color.FromArgb(0, 245, 255), 1.9f))
+            {
+                g.DrawLine(gradPen, 6, 17, 11, 11);
+                g.DrawLine(gradPen, 11, 18, 16, 12);
+                g.DrawLine(gradPen, 9, 12, 15, 5);
+            }
+            g.FillEllipse(Brushes.White, 10, 10, 2.5f, 2.5f);
+            g.FillEllipse(Brushes.White, 15, 11, 2.5f, 2.5f);
+            g.FillEllipse(Brushes.White, 14, 4, 2.5f, 2.5f);
+        }
+
+        // VecView: Dark mesh triangle + bright gold/cyan directional line segments
+        private static void DrawVecView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(28, 36, 52), Color.FromArgb(16, 20, 30));
+            using (var gridPen = new Pen(Color.FromArgb(90, 130, 160, 200), 1.0f))
+            {
+                g.DrawLine(gridPen, 4, 18, 12, 5);
+                g.DrawLine(gridPen, 12, 5, 20, 18);
+                g.DrawLine(gridPen, 4, 18, 20, 18);
+            }
+            using (var segPen = new Pen(Color.FromArgb(255, 220, 55), 2.0f))
+            {
+                g.DrawLine(segPen, 5, 16, 11, 11);
+                g.DrawLine(segPen, 12, 16, 18, 11);
+                g.DrawLine(segPen, 9, 9, 16, 5);
+            }
+            g.FillEllipse(Brushes.Cyan, 10, 10, 2.6f, 2.6f);
+            g.FillEllipse(Brushes.Cyan, 17, 10, 2.6f, 2.6f);
+            g.FillEllipse(Brushes.Cyan, 15, 4, 2.6f, 2.6f);
+        }
+
+        // CrossView: X-Crosses + Divergence/Rotor ring
+        private static void DrawCrossView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(38, 28, 68), Color.FromArgb(20, 16, 38));
+            using (var ringPen = new Pen(Color.FromArgb(140, 255, 190, 60), 1.2f) { DashStyle = DashStyle.Dot })
+            {
+                g.DrawEllipse(ringPen, 4.5f, 4.5f, 15f, 15f);
+            }
+            using (var pU = new Pen(Color.FromArgb(0, 235, 255), 1.8f))
+            using (var pV = new Pen(Color.FromArgb(255, 95, 85), 1.8f))
+            {
+                PointF[] pts = { new PointF(8, 8), new PointF(16, 8), new PointF(12, 12), new PointF(8, 16), new PointF(16, 16) };
+                foreach (var c in pts)
+                {
+                    g.DrawLine(pU, c.X - 2.3f, c.Y - 2.3f, c.X + 2.3f, c.Y + 2.3f);
+                    g.DrawLine(pV, c.X - 2.3f, c.Y + 2.3f, c.X + 2.3f, c.Y - 2.3f);
+                }
+            }
+        }
+
+        // =========================================================================
+        // 02. SCALAR & GEODESICS
+        // =========================================================================
+
+        // Curvatures: Saddle curvature arcs + principal axes
         private static void DrawCurvatures(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(40, 110, 200), Color.FromArgb(220, 60, 50));
-            using (var pen = new Pen(Color.FromArgb(230, 255, 255, 255), 1.3f))
+            DrawDiscBackground(g, Color.FromArgb(35, 105, 205), Color.FromArgb(225, 55, 50));
+            using (var pen = new Pen(Color.FromArgb(240, 255, 255, 255), 1.5f))
             {
                 g.DrawArc(pen, 4f, 8f, 16f, 8f, 0, 180);
                 g.DrawArc(pen, 8f, 4f, 8f, 16f, 90, 180);
             }
-            using (var p2 = new Pen(Color.Gold, 1.5f))
+            using (var p2 = new Pen(Color.Gold, 1.6f))
             {
                 g.DrawLine(p2, 12, 3, 12, 21);
                 g.DrawLine(p2, 3, 12, 21, 12);
             }
         }
 
-        // 02. Mean Curvature Smooth
-        private static void DrawMCFlow(Graphics g)
+        // SmoothScalar: Noisy red wave -> Smooth glowing cyan bell curve
+        private static void DrawSmoothScalar(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(45, 55, 75), Color.FromArgb(25, 35, 50));
-            PointF[] jagged = { new PointF(4, 15), new PointF(7, 6), new PointF(11, 13), new PointF(15, 5), new PointF(20, 14) };
-            using (var p1 = new Pen(Color.FromArgb(150, 255, 100, 90), 1.2f))
-                g.DrawLines(p1, jagged);
-            using (var p2 = new Pen(Color.FromArgb(80, 230, 190), 2.2f))
-                g.DrawArc(p2, 4, 8, 16, 12, 190, 160);
-        }
-
-        // 03. Scalar Field Calculus
-        private static void DrawGradLap(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(255, 210, 60), Color.FromArgb(190, 40, 40));
-            using (var pen = new Pen(Color.White, 1.6f))
+            DrawDiscBackground(g, Color.FromArgb(42, 52, 82), Color.FromArgb(22, 28, 48));
+            using (var noisyPen = new Pen(Color.FromArgb(140, 255, 105, 85), 1.1f))
             {
-                DrawArrow(g, pen, 6, 17, 17, 6);
-                DrawArrow(g, pen, 6, 11, 13, 4);
-                DrawArrow(g, pen, 11, 18, 18, 11);
+                PointF[] jagged = {
+                    new PointF(3, 16), new PointF(5.5f, 7), new PointF(8, 17),
+                    new PointF(10.5f, 5), new PointF(13, 14), new PointF(15.5f, 5),
+                    new PointF(18, 16), new PointF(21, 13)
+                };
+                g.DrawLines(noisyPen, jagged);
+            }
+            using (var smoothPen = new Pen(Color.FromArgb(80, 250, 215), 2.4f))
+            {
+                g.DrawBezier(smoothPen, new PointF(3, 16), new PointF(9, 3), new PointF(15, 3), new PointF(21, 16));
             }
         }
 
-        // 04. Harmonic Scalar Field
-        private static void DrawHarmonic(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(40, 180, 220), Color.FromArgb(250, 130, 50));
-            using (var pen = new Pen(Color.FromArgb(180, 255, 255, 255), 1.1f))
-            {
-                g.DrawBezier(pen, new PointF(4, 12), new PointF(9, 6), new PointF(15, 18), new PointF(20, 12));
-                g.DrawBezier(pen, new PointF(5, 16), new PointF(10, 10), new PointF(14, 20), new PointF(19, 15));
-            }
-            g.FillEllipse(Brushes.White, 4, 5, 4, 4);
-            g.FillEllipse(Brushes.Black, 16, 15, 4, 4);
-        }
-
-        // 05. Heat Geodesic Distance (Keenan Crane's Crimson-Orange-Yellow-White Bunny Heatmap)
+        // HeatDist: Keenan Crane's Crimson-Orange-Yellow-White Heatmap
         private static void DrawHeatDist(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(120, 15, 20), Color.FromArgb(210, 45, 30));
+            DrawDiscBackground(g, Color.FromArgb(125, 15, 22), Color.FromArgb(215, 45, 30));
             g.FillEllipse(new SolidBrush(Color.FromArgb(245, 120, 30)), 3f, 3f, 15f, 15f);
-            g.FillEllipse(new SolidBrush(Color.FromArgb(255, 200, 60)), 5f, 5f, 10.5f, 10.5f);
-            g.FillEllipse(Brushes.White, 7.5f, 7.5f, 5f, 5f);
+            g.FillEllipse(new SolidBrush(Color.FromArgb(255, 205, 60)), 5.2f, 5.2f, 10.2f, 10.2f);
+            g.FillEllipse(Brushes.White, 7.6f, 7.6f, 5f, 5f);
 
-            using (var pen = new Pen(Color.FromArgb(210, 255, 240, 200), 1.0f))
+            using (var pen = new Pen(Color.FromArgb(215, 255, 245, 200), 1.0f))
             {
-                g.DrawEllipse(pen, 5f, 5f, 10.5f, 10.5f);
+                g.DrawEllipse(pen, 5.2f, 5.2f, 10.2f, 10.2f);
                 g.DrawEllipse(pen, 3f, 3f, 15f, 15f);
-                g.DrawEllipse(pen, 1.8f, 1.8f, 19.5f, 19.5f);
             }
             g.FillEllipse(Brushes.Red, 9f, 9f, 2.5f, 2.5f);
         }
 
-        // 06. Mesh Iso-Contours
-        private static void DrawIsoCrvs(Graphics g)
+        // IsoCut: Clean glowing gold iso-splitting curves on dark plum mesh
+        private static void DrawIsoCut(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(50, 30, 40), Color.FromArgb(130, 30, 40));
-            using (var pen = new Pen(Color.FromArgb(255, 225, 110), 1.5f))
+            DrawDiscBackground(g, Color.FromArgb(55, 28, 48), Color.FromArgb(28, 16, 32));
+            using (var pen = new Pen(Color.FromArgb(255, 220, 55), 1.8f))
             {
-                g.DrawEllipse(pen, 3f, 3f, 18f, 18f);
-                g.DrawEllipse(pen, 6f, 6f, 12f, 12f);
-                g.DrawEllipse(pen, 9f, 9f, 6f, 6f);
+                g.DrawArc(pen, 3f, 3f, 18f, 18f, 200, 140);
+                g.DrawArc(pen, 5.5f, 6f, 13f, 13f, 200, 140);
+                g.DrawArc(pen, 8f, 9f, 8f, 8f, 200, 140);
             }
         }
 
-        // 07. Geodesic Shortest Path
+        // GeoPath: Heatmap + bright cyan shortest path A-to-B
         private static void DrawGeoPath(Graphics g)
         {
             DrawHeatDist(g);
-            using (var pen = new Pen(Color.FromArgb(0, 255, 220), 2.4f))
+            using (var pen = new Pen(Color.FromArgb(0, 255, 220), 2.5f))
             {
                 g.DrawBezier(pen, new PointF(10, 10), new PointF(14, 8), new PointF(15, 16), new PointF(19, 18));
             }
-            g.FillEllipse(Brushes.Cyan, 17.5f, 16.5f, 3.5f, 3.5f);
+            g.FillEllipse(Brushes.Cyan, 17.5f, 16.5f, 3.6f, 3.6f);
         }
 
-        // 08. Vector Parallel Transport
+        // FlipOut: Blue mesh + gold edges + taut red geodesic curve
+        private static void DrawFlipOut(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(0, 135, 230), Color.FromArgb(0, 85, 170));
+            using (var goldPen = new Pen(Color.FromArgb(255, 195, 40), 1.1f))
+            {
+                g.DrawLine(goldPen, 3, 12, 12, 3);
+                g.DrawLine(goldPen, 12, 3, 21, 12);
+                g.DrawLine(goldPen, 21, 12, 12, 21);
+                g.DrawLine(goldPen, 12, 21, 3, 12);
+                g.DrawLine(goldPen, 3, 12, 21, 12);
+            }
+            using (var redPen = new Pen(Color.FromArgb(250, 35, 40), 2.5f))
+            {
+                g.DrawLine(redPen, 5, 18, 19, 6);
+            }
+            g.FillEllipse(Brushes.White, 3.5f, 16.5f, 3.5f, 3.5f);
+            g.FillEllipse(Brushes.White, 17f, 4.5f, 3.5f, 3.5f);
+        }
+
+        // =========================================================================
+        // 03. VECTOR FIELDS & STRIPES
+        // =========================================================================
+
+        // RotateVec: Tangent vector rotated by angle A around normal (faint cyan -> curved arc -> bright gold)
+        private static void DrawRotateVec(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(22, 62, 72), Color.FromArgb(14, 36, 45));
+            // Original vector (faint cyan horizontal)
+            using (var origPen = new Pen(Color.FromArgb(140, 100, 225, 255), 1.8f))
+            {
+                g.DrawLine(origPen, 6, 17, 19, 17);
+            }
+            // Rotation arc
+            using (var arcPen = new Pen(Color.FromArgb(235, 255, 255, 255), 1.4f) { DashStyle = DashStyle.Dot })
+            {
+                g.DrawArc(arcPen, 8, 9, 16, 16, 270, 90);
+            }
+            // Rotated vector (bright gold vertical-diagonal)
+            using (var rotPen = new Pen(Color.FromArgb(255, 220, 45), 2.4f))
+            {
+                DrawArrow(g, rotPen, 6, 17, 10, 5);
+            }
+            g.FillEllipse(Brushes.White, 4.2f, 15.2f, 3.6f, 3.6f);
+        }
+
+        // SmoothField: Flowing aligned tangent segments
+        private static void DrawSmoothField(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(28, 62, 98), Color.FromArgb(16, 34, 56));
+            using (var flowPen = new Pen(Color.FromArgb(110, 255, 220, 100), 1.2f))
+            {
+                g.DrawBezier(flowPen, new PointF(3, 16), new PointF(9, 10), new PointF(15, 10), new PointF(21, 6));
+                g.DrawBezier(flowPen, new PointF(3, 19), new PointF(9, 13), new PointF(15, 13), new PointF(21, 9));
+            }
+            using (var segPen = new Pen(Color.FromArgb(90, 245, 255), 2.0f))
+            {
+                g.DrawLine(segPen, 4.5f, 15.5f, 9.5f, 11.5f);
+                g.DrawLine(segPen, 9.5f, 14.5f, 15.0f, 11.0f);
+                g.DrawLine(segPen, 14.5f, 12.5f, 19.8f, 8.0f);
+            }
+        }
+
+        // CrossField: Orthogonal U (cyan) and V (coral) crosses + gold singularity
+        private static void DrawCrossField(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(28, 48, 82), Color.FromArgb(16, 28, 50));
+            using (var pU = new Pen(Color.FromArgb(80, 230, 255), 1.7f))
+            using (var pV = new Pen(Color.FromArgb(255, 110, 85), 1.7f))
+            {
+                PointF[] centers = { new PointF(7, 7), new PointF(17, 7), new PointF(12, 12), new PointF(7, 17), new PointF(17, 17) };
+                foreach (var c in centers)
+                {
+                    g.DrawLine(pU, c.X - 2.6f, c.Y - 0.7f, c.X + 2.6f, c.Y + 0.7f);
+                    g.DrawLine(pV, c.X - 0.7f, c.Y + 2.6f, c.X + 0.7f, c.Y - 2.6f);
+                }
+            }
+            g.FillEllipse(Brushes.Gold, 10.5f, 10.5f, 3f, 3f);
+        }
+
+        // VecHeat: Vector Parallel Transport
         private static void DrawVecHeat(Graphics g)
         {
             DrawDiscBackground(g, Color.FromArgb(35, 95, 165), Color.FromArgb(20, 50, 95));
-            using (var pen = new Pen(Color.FromArgb(160, 225, 255), 1.5f))
+            using (var pen = new Pen(Color.FromArgb(160, 230, 255), 1.7f))
             {
-                DrawArrow(g, pen, 5, 16, 10, 8);
-                DrawArrow(g, pen, 10, 18, 15, 10);
-                DrawArrow(g, pen, 15, 16, 20, 8);
+                g.DrawLine(pen, 6, 17, 11, 9);
+                g.DrawLine(pen, 11, 18, 16, 10);
+                g.DrawLine(pen, 15, 16, 20, 8);
             }
-            using (var srcPen = new Pen(Color.FromArgb(255, 190, 50), 2.0f))
+            using (var srcPen = new Pen(Color.FromArgb(255, 205, 45), 2.3f))
             {
-                DrawArrow(g, srcPen, 4, 12, 9, 4);
+                DrawArrow(g, srcPen, 4, 13, 9, 4);
             }
         }
 
-        // 09. Logarithmic Map UV (Rainbow Polar Grid)
-        private static void DrawLogMap(Graphics g)
+        // WalkOnMesh: Stepped trajectory from green start to crimson peak
+        private static void DrawWalkOnMesh(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(235, 70, 150), Color.FromArgb(60, 200, 230));
-            using (var pen = new Pen(Color.FromArgb(220, 255, 255, 255), 1.1f))
+            DrawDiscBackground(g, Color.FromArgb(40, 75, 115), Color.FromArgb(20, 38, 65));
+            PointF[] walk = { new PointF(4, 18), new PointF(8, 12), new PointF(13, 14), new PointF(16, 7), new PointF(20, 5) };
+            using (var walkPen = new Pen(Color.FromArgb(255, 215, 50), 2.1f))
             {
-                g.DrawEllipse(pen, 5f, 5f, 14f, 14f);
-                g.DrawEllipse(pen, 8.5f, 8.5f, 7f, 7f);
-                g.DrawLine(pen, 12, 2, 12, 22);
-                g.DrawLine(pen, 2, 12, 22, 12);
-                g.DrawLine(pen, 5, 5, 19, 19);
-                g.DrawLine(pen, 19, 5, 5, 19);
+                g.DrawLines(walkPen, walk);
             }
-            g.FillEllipse(Brushes.Black, 10.5f, 10.5f, 3f, 3f);
+            foreach (var p in walk)
+                g.FillEllipse(Brushes.White, p.X - 1.6f, p.Y - 1.6f, 3.2f, 3.2f);
+            g.FillEllipse(Brushes.LimeGreen, walk[0].X - 2.3f, walk[0].Y - 2.3f, 4.6f, 4.6f);
+            g.FillEllipse(Brushes.Crimson, walk[4].X - 2.3f, walk[4].Y - 2.3f, 4.6f, 4.6f);
         }
 
-        // 10. Surface Decal Mapper
-        private static void DrawDecalMap(Graphics g)
+        // GuidedFlow: Blue avoid zone (0) + Gold attract highway (1) + Cyan guided path
+        private static void DrawGuidedFlow(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(50, 140, 210), Color.FromArgb(30, 70, 130));
-            using (var pen = new Pen(Color.FromArgb(255, 230, 80), 1.6f))
+            DrawDiscBackground(g, Color.FromArgb(25, 45, 95), Color.FromArgb(215, 145, 30));
+            using (var pathPen = new Pen(Color.FromArgb(0, 255, 220), 2.3f))
             {
-                g.DrawRectangle(pen, 6, 6, 12, 12);
-                g.DrawLine(pen, 6, 12, 18, 12);
-                g.DrawLine(pen, 12, 6, 12, 18);
+                g.DrawBezier(pathPen, new PointF(4, 18), new PointF(11, 17), new PointF(13, 7), new PointF(20, 6));
             }
+            using (var subPen = new Pen(Color.FromArgb(160, 255, 255, 255), 1.3f))
+            {
+                g.DrawBezier(subPen, new PointF(4, 13), new PointF(10, 13), new PointF(12, 5), new PointF(18, 4));
+            }
+            g.FillEllipse(Brushes.Gold, 17.5f, 4f, 3.5f, 3.5f);
         }
 
-        // 11. Optimal Direction Field (Torus Cross-Field + Red/Blue Singularities)
-        private static void DrawOptField(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(25, 30, 40), Color.FromArgb(45, 60, 85));
-            using (var p1 = new Pen(Color.FromArgb(80, 220, 255), 1.3f))
-            {
-                g.DrawEllipse(p1, 4f, 4f, 16f, 16f);
-                g.DrawEllipse(p1, 7.5f, 7.5f, 9f, 9f);
-            }
-            using (var p2 = new Pen(Color.FromArgb(160, 255, 120), 1.1f))
-            {
-                for (int i = 0; i < 8; i++)
-                {
-                    double a = i * Math.PI / 4.0;
-                    float x1 = 12 + (float)(4.5 * Math.Cos(a)), y1 = 12 + (float)(4.5 * Math.Sin(a));
-                    float x2 = 12 + (float)(9.5 * Math.Cos(a)), y2 = 12 + (float)(9.5 * Math.Sin(a));
-                    g.DrawLine(p2, x1, y1, x2, y2);
-                }
-            }
-            g.FillEllipse(Brushes.Red, 1.5f, 10f, 4f, 4f);
-            g.FillEllipse(Brushes.Red, 18.5f, 10f, 4f, 4f);
-        }
-
-        // 12. Trivial Connections (Directly inspired by TrivialConnections/test.png: Grey sphere, Red center dot, Blue ticks)
-        private static void DrawTrivConn(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(230, 232, 235), Color.FromArgb(175, 180, 190));
-            using (var bluePen = new Pen(Color.FromArgb(0, 70, 255), 1.6f))
-            {
-                for (int ring = 1; ring <= 2; ring++)
-                {
-                    float r = ring * 4.2f;
-                    int count = ring * 6;
-                    for (int k = 0; k < count; k++)
-                    {
-                        double a = 2.0 * Math.PI * k / count;
-                        float cx = 12f + (float)(r * Math.Cos(a));
-                        float cy = 12f + (float)(r * Math.Sin(a));
-                        float tx = (float)(-Math.Sin(a)) * 1.8f;
-                        float ty = (float)(Math.Cos(a)) * 1.8f;
-                        g.DrawLine(bluePen, cx - tx, cy - ty, cx + tx, cy + ty);
-                    }
-                }
-            }
-            g.FillEllipse(new SolidBrush(Color.FromArgb(235, 50, 40)), 9.5f, 9.5f, 5f, 5f);
-        }
-
-        // 13. Mesh Field Streamlines
-        private static void DrawStreamlines(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(30, 65, 110), Color.FromArgb(15, 35, 65));
-            using (var pen = new Pen(Color.FromArgb(255, 185, 65), 1.6f))
-            {
-                g.DrawBezier(pen, new PointF(3, 8), new PointF(9, 3), new PointF(15, 13), new PointF(21, 8));
-                g.DrawBezier(pen, new PointF(3, 13), new PointF(9, 8), new PointF(15, 18), new PointF(21, 13));
-                g.DrawBezier(pen, new PointF(3, 18), new PointF(9, 13), new PointF(15, 23), new PointF(21, 18));
-            }
-        }
-
-        // 14. Stripe Patterns (Zebra Stripes with Topological Y-Bifurcation & Red Branch Dot)
+        // Stripes: Equidistant Zebra Stripes with Y-Bifurcation
         private static void DrawStripes(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(245, 245, 245), Color.FromArgb(215, 215, 220));
-            using (var blackPen = new Pen(Color.FromArgb(25, 25, 30), 2.3f))
+            DrawDiscBackground(g, Color.FromArgb(245, 245, 248), Color.FromArgb(210, 214, 222));
+            using (var blackPen = new Pen(Color.FromArgb(25, 28, 35), 2.2f))
             {
                 g.DrawLine(blackPen, 4, 5, 20, 5);
-                // Y-Bifurcation stripe in the center!
                 g.DrawLine(blackPen, 3, 12, 11, 12);
                 g.DrawLine(blackPen, 11, 12, 19, 8.5f);
                 g.DrawLine(blackPen, 11, 12, 19, 15.5f);
@@ -309,171 +415,28 @@ namespace CraneGH.Core
             g.FillEllipse(new SolidBrush(Color.FromArgb(235, 50, 40)), 9.5f, 10.5f, 4f, 4f);
         }
 
-        // 15. Curve Guided Equidistant Stripes (Guide curve + equidistant parallel stripes at spacing D)
-        private static void DrawCrvStripes(Graphics g)
+        // VarStripes: Variable-Spacing Stripes (sparse on left where scalar is low, dense on right where scalar is high!)
+        private static void DrawVarStripes(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(245, 245, 245), Color.FromArgb(215, 215, 220));
-            // Guide curve in bright Crimson/Magenta on the left
-            using (var guidePen = new Pen(Color.FromArgb(230, 40, 90), 2.4f))
+            DrawDiscBackground(g, Color.FromArgb(40, 70, 135), Color.FromArgb(235, 155, 45));
+            using (var stripePen = new Pen(Color.White, 1.7f))
             {
-                g.DrawBezier(guidePen, new PointF(5, 3), new PointF(8, 9), new PointF(4, 15), new PointF(7, 21));
-            }
-            // Equidistant stripes at fixed spacing D
-            using (var stripePen = new Pen(Color.FromArgb(25, 30, 40), 1.8f))
-            {
-                g.DrawBezier(stripePen, new PointF(10, 3), new PointF(13, 9), new PointF(9, 15), new PointF(12, 21));
-                g.DrawBezier(stripePen, new PointF(15, 3), new PointF(18, 9), new PointF(14, 15), new PointF(17, 21));
-                g.DrawBezier(stripePen, new PointF(19.5f, 4), new PointF(21.5f, 9), new PointF(18.5f, 15), new PointF(20.5f, 20));
+                // Sparse on left (low scalar)
+                g.DrawLine(stripePen, 5.5f, 5f, 5.5f, 19f);
+                g.DrawLine(stripePen, 10.5f, 3.5f, 10.5f, 20.5f);
+                // Dense on right (high scalar / gradient)
+                g.DrawLine(stripePen, 14.2f, 3.5f, 14.2f, 20.5f);
+                g.DrawLine(stripePen, 16.8f, 4.2f, 16.8f, 19.8f);
+                g.DrawLine(stripePen, 19.2f, 6.0f, 19.2f, 18.0f);
             }
         }
 
-        // 16. Spin Conformal Deform (Green & Purple SpinXForm)
-        private static void DrawSpinXForm(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(80, 190, 110), Color.FromArgb(165, 65, 175));
-            using (var pen = new Pen(Color.FromArgb(210, 255, 255, 255), 1.1f))
-            {
-                g.DrawEllipse(pen, 4, 6, 16, 12);
-                g.DrawEllipse(pen, 6, 4, 12, 16);
-            }
-        }
+        // =========================================================================
+        // 04. SEGMENTATION & FABRICATION
+        // =========================================================================
 
-        // 17. Conformal Flatten BFF (Checkerboard UV Grid)
-        private static void DrawBFF(Graphics g)
-        {
-            using (var bBg = new SolidBrush(Color.FromArgb(240, 240, 245)))
-                g.FillRectangle(bBg, 2, 2, 20, 20);
-            using (var dark = new SolidBrush(Color.FromArgb(35, 40, 50)))
-            {
-                for (int ix = 0; ix < 4; ix++)
-                    for (int iy = 0; iy < 4; iy++)
-                        if ((ix + iy) % 2 == 0)
-                            g.FillRectangle(dark, 2 + ix * 5, 2 + iy * 5, 5, 5);
-            }
-            using (var border = new Pen(Color.FromArgb(0, 170, 230), 1.5f))
-                g.DrawRectangle(border, 2, 2, 20, 20);
-        }
-
-        // 18. Deployable Auxetics (Rotating Squares Kirigami)
-        private static void DrawAuxetics(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(235, 240, 248), Color.FromArgb(190, 205, 225));
-            using (var br = new SolidBrush(Color.FromArgb(55, 115, 185)))
-            using (var pen = new Pen(Color.FromArgb(20, 45, 80), 1.0f))
-            {
-                PointF[][] quads = new PointF[][]
-                {
-                    new[] { new PointF(6, 4), new PointF(12, 6), new PointF(10, 12), new PointF(4, 10) },
-                    new[] { new PointF(12, 6), new PointF(18, 4), new PointF(20, 10), new PointF(14, 12) },
-                    new[] { new PointF(4, 14), new PointF(10, 12), new PointF(12, 18), new PointF(6, 20) },
-                    new[] { new PointF(14, 12), new PointF(20, 14), new PointF(18, 20), new PointF(12, 18) }
-                };
-                foreach (var q in quads)
-                {
-                    g.FillPolygon(br, q);
-                    g.DrawPolygon(pen, q);
-                }
-            }
-        }
-
-        // 19. FlipOut Geodesic Loop Shorten (Keenan's Blue Mesh + Gold Edges + Red Geodesic)
-        private static void DrawFlipOut(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(0, 140, 235), Color.FromArgb(0, 95, 180));
-            using (var goldPen = new Pen(Color.FromArgb(255, 195, 40), 1.1f))
-            {
-                g.DrawLine(goldPen, 3, 12, 12, 3);
-                g.DrawLine(goldPen, 12, 3, 21, 12);
-                g.DrawLine(goldPen, 21, 12, 12, 21);
-                g.DrawLine(goldPen, 12, 21, 3, 12);
-                g.DrawLine(goldPen, 3, 12, 21, 12);
-                g.DrawLine(goldPen, 12, 3, 12, 21);
-            }
-            using (var redPen = new Pen(Color.FromArgb(245, 30, 35), 2.4f))
-            {
-                g.DrawLine(redPen, 5, 18, 19, 6);
-            }
-            g.FillEllipse(Brushes.DarkSlateGray, 3.5f, 16.5f, 3.5f, 3.5f);
-            g.FillEllipse(Brushes.DarkSlateGray, 17f, 4.5f, 3.5f, 3.5f);
-        }
-
-        // 20. Repulsive Curve Flow (Orange & Purple Interlocking Repulsive Tubes)
-        private static void DrawRepCurve(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(40, 30, 50), Color.FromArgb(25, 20, 35));
-            using (var p1 = new Pen(Color.FromArgb(255, 150, 40), 2.5f))
-                g.DrawArc(p1, 4, 4, 16, 10, 0, 270);
-            using (var p2 = new Pen(Color.FromArgb(165, 85, 235), 2.5f))
-                g.DrawArc(p2, 4, 10, 16, 10, 180, 270);
-        }
-
-        // 21. Walk on Spheres PDE
-        private static void DrawWoS(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(30, 45, 65), Color.FromArgb(15, 25, 40));
-            using (var dashPen = new Pen(Color.FromArgb(120, 225, 255), 1.2f) { DashStyle = DashStyle.Dot })
-            {
-                g.DrawEllipse(dashPen, 3, 5, 11, 11);
-                g.DrawEllipse(dashPen, 10, 7, 9, 9);
-            }
-            using (var linePen = new Pen(Color.FromArgb(255, 200, 70), 1.5f))
-            {
-                g.DrawLine(linePen, 8.5f, 10.5f, 14.5f, 11.5f);
-                g.DrawLine(linePen, 14.5f, 11.5f, 19f, 11.5f);
-            }
-            g.FillEllipse(Brushes.White, 7f, 9f, 3f, 3f);
-            g.FillEllipse(Brushes.Red, 17.5f, 10f, 3f, 3f);
-        }
-
-        // 22. Subgrid Marching Tet
-        private static void DrawSubgridTet(Graphics g)
-        {
-            PointF p0 = new PointF(12, 2), p1 = new PointF(2, 20), p2 = new PointF(22, 20), p3 = new PointF(12, 13);
-            PointF[] sheet = { new PointF(7, 11), new PointF(17, 11), new PointF(15, 17), new PointF(9, 17) };
-            using (var sb = new SolidBrush(Color.FromArgb(190, 0, 190, 230)))
-                g.FillPolygon(sb, sheet);
-            using (var tetPen = new Pen(Color.FromArgb(245, 180, 40), 1.4f))
-            {
-                g.DrawPolygon(tetPen, new[] { p0, p1, p2 });
-                g.DrawLine(tetPen, p0, p3);
-                g.DrawLine(tetPen, p1, p3);
-                g.DrawLine(tetPen, p2, p3);
-            }
-        }
-
-        // 23. Sharp Feature Creases (Aristas Fuertes)
-        private static void DrawSharpEdges(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(65, 75, 95), Color.FromArgb(40, 45, 60));
-            using (var weakPen = new Pen(Color.FromArgb(110, 170, 190, 215), 1.0f))
-            {
-                g.DrawLine(weakPen, 4, 12, 12, 4);
-                g.DrawLine(weakPen, 12, 20, 20, 12);
-            }
-            using (var creasePen = new Pen(Color.FromArgb(255, 220, 40), 2.5f))
-            {
-                g.DrawLine(creasePen, 4, 18, 12, 6);
-                g.DrawLine(creasePen, 12, 6, 20, 18);
-            }
-        }
-
-        // 24. Feature-Aware Heatmap (Heatmap blocked by a strong diagonal crease barrier)
-        private static void DrawFeatHeat(Graphics g)
-        {
-            // Upper-left warm heatmap, lower-right cool region separated by a sharp diagonal crease
-            using (var warmBrush = new LinearGradientBrush(new PointF(2, 2), new PointF(14, 14), Color.FromArgb(255, 240, 80), Color.FromArgb(220, 45, 30)))
-                g.FillPie(warmBrush, 1.5f, 1.5f, 21f, 21f, 135, 180);
-            using (var coolBrush = new SolidBrush(Color.FromArgb(40, 75, 145)))
-                g.FillPie(coolBrush, 1.5f, 1.5f, 21f, 21f, -45, 180);
-
-            using (var barrierPen = new Pen(Color.White, 2.2f))
-                g.DrawLine(barrierPen, 4.5f, 19.5f, 19.5f, 4.5f);
-            using (var border = new Pen(Color.FromArgb(30, 30, 35), 1.1f))
-                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
-        }
-
-        // 25. Mesh Heatmap Segmenter (Multi-colored segmented shards with crisp dark crease seams)
-        private static void DrawMeshSeg(Graphics g)
+        // KMeansSeg: Multi-colored clusters + geodesic seams + normal arrows
+        private static void DrawKMeansSeg(Graphics g)
         {
             using (var b1 = new SolidBrush(Color.FromArgb(230, 75, 53)))
                 g.FillPie(b1, 1.5f, 1.5f, 21f, 21f, 180, 110);
@@ -489,197 +452,7 @@ namespace CraneGH.Core
                 g.DrawLine(seamPen, 12, 12, 20, 19);
                 g.DrawEllipse(seamPen, 1.5f, 1.5f, 21f, 21f);
             }
-        }
-
-        // 26. Principal Cross Field (4-RoSy Crosses on Surface)
-        private static void DrawCrossField(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(30, 50, 85), Color.FromArgb(18, 30, 55));
-            using (var pU = new Pen(Color.FromArgb(80, 225, 255), 1.5f))
-            using (var pV = new Pen(Color.FromArgb(255, 120, 90), 1.5f))
-            {
-                PointF[] centers = { new PointF(7, 7), new PointF(17, 7), new PointF(12, 12), new PointF(7, 17), new PointF(17, 17) };
-                foreach (var c in centers)
-                {
-                    g.DrawLine(pU, c.X - 2.6f, c.Y - 0.8f, c.X + 2.6f, c.Y + 0.8f);
-                    g.DrawLine(pV, c.X - 0.8f, c.Y + 2.6f, c.X + 0.8f, c.Y - 2.6f);
-                }
-            }
-            g.FillEllipse(Brushes.Gold, 10.5f, 10.5f, 3f, 3f);
-        }
-
-        // 27. Cross Field Quad Grid (Orthogonal Equidistant U/V Curves)
-        private static void DrawCrossQuads(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(240, 244, 250), Color.FromArgb(200, 212, 230));
-            using (var pU = new Pen(Color.FromArgb(0, 110, 215), 1.4f))
-            using (var pV = new Pen(Color.FromArgb(225, 55, 45), 1.4f))
-            {
-                for (int i = -1; i <= 1; i++)
-                {
-                    float off = i * 4.5f;
-                    g.DrawBezier(pU, new PointF(3, 12 + off), new PointF(9, 9 + off), new PointF(15, 15 + off), new PointF(21, 12 + off));
-                    g.DrawBezier(pV, new PointF(12 + off, 3), new PointF(9 + off, 9), new PointF(15 + off, 15), new PointF(12 + off, 21));
-                }
-            }
-        }
-
-        // 28. Variational Surface Cuts (Sharp & Crane 2018: Weighted Seam Cut through Gaussian Curvature Cones)
-        private static void DrawVarCuts(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(235, 235, 240), Color.FromArgb(185, 195, 210));
-            // Two Gaussian curvature / weight cones
-            g.FillEllipse(new SolidBrush(Color.FromArgb(140, 255, 160, 50)), 4f, 5f, 7f, 7f);
-            g.FillEllipse(new SolidBrush(Color.FromArgb(140, 255, 160, 50)), 13f, 12f, 7f, 7f);
-            // Variational cut seam snapping through the weighted cones
-            using (var cutPen = new Pen(Color.FromArgb(220, 25, 40), 2.4f))
-            {
-                g.DrawBezier(cutPen, new PointF(3, 16), new PointF(6, 5), new PointF(18, 19), new PointF(21, 8));
-            }
-            g.FillEllipse(Brushes.Red, 6f, 7f, 3f, 3f);
-            g.FillEllipse(Brushes.Red, 15f, 14f, 3f, 3f);
-        }
-
-        // 29. Scalar Field Smooth (Noisy jagged wave -> Smooth glowing Gaussian wave)
-        private static void DrawSmoothScalar(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(45, 55, 85), Color.FromArgb(25, 32, 52));
-            // Faint noisy input signal
-            using (var noisyPen = new Pen(Color.FromArgb(130, 255, 110, 90), 1.1f))
-            {
-                PointF[] jagged = {
-                    new PointF(3, 15), new PointF(5, 8), new PointF(7, 17),
-                    new PointF(9.5f, 5), new PointF(12, 13), new PointF(14.5f, 4.5f),
-                    new PointF(17, 16), new PointF(19, 9), new PointF(21, 14)
-                };
-                g.DrawLines(noisyPen, jagged);
-            }
-            // Crisp smoothed output wave
-            using (var smoothPen = new Pen(Color.FromArgb(90, 245, 210), 2.3f))
-            {
-                g.DrawBezier(smoothPen, new PointF(3, 15), new PointF(9, 4), new PointF(15, 4), new PointF(21, 15));
-            }
-        }
-
-        // 30. Vector & N-RoSy Field Smooth (Aligned flowing tangent vectors via Connection Laplacian)
-        private static void DrawSmoothField(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(28, 62, 95), Color.FromArgb(16, 36, 58));
-            using (var flowPen = new Pen(Color.FromArgb(110, 255, 220, 100), 1.1f))
-            {
-                g.DrawBezier(flowPen, new PointF(3, 16), new PointF(9, 10), new PointF(15, 10), new PointF(21, 7));
-                g.DrawBezier(flowPen, new PointF(3, 19), new PointF(9, 13), new PointF(15, 13), new PointF(21, 10));
-            }
-            using (var arrowPen = new Pen(Color.FromArgb(100, 245, 255), 1.6f))
-            {
-                DrawArrow(g, arrowPen, 4.5f, 15.5f, 9.5f, 11.5f);
-                DrawArrow(g, arrowPen, 9.5f, 14.5f, 15.0f, 11.0f);
-                DrawArrow(g, arrowPen, 14.5f, 12.5f, 19.8f, 8.5f);
-            }
-        }
-
-        // 31. Mesh Vector & Field Display (Anchored tangent arrows & crosses on mesh vertices/faces)
-        private static void DrawVecView(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(35, 42, 60), Color.FromArgb(20, 24, 36));
-            using (var gridPen = new Pen(Color.FromArgb(80, 140, 165, 200), 0.9f))
-            {
-                g.DrawLine(gridPen, 4, 17, 12, 6);
-                g.DrawLine(gridPen, 12, 6, 20, 17);
-                g.DrawLine(gridPen, 4, 17, 20, 17);
-            }
-            using (var arrowPen = new Pen(Color.FromArgb(255, 210, 55), 1.7f))
-            {
-                DrawArrow(g, arrowPen, 6, 15, 11, 10);
-                DrawArrow(g, arrowPen, 12, 15, 18, 10);
-                DrawArrow(g, arrowPen, 10, 9, 16, 5);
-            }
-            g.FillEllipse(Brushes.Cyan, 4.5f, 13.5f, 3f, 3f);
-            g.FillEllipse(Brushes.Cyan, 10.5f, 13.5f, 3f, 3f);
-            g.FillEllipse(Brushes.Cyan, 8.5f, 7.5f, 3f, 3f);
-        }
-
-        // 32. Scalar Field Inspector & Legend Display
-        private static void DrawScalarView(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(20, 40, 110), Color.FromArgb(240, 80, 35));
-            using (var isoPen = new Pen(Color.FromArgb(220, 255, 245, 180), 1.2f))
-            {
-                g.DrawArc(isoPen, 4, 4, 16, 16, 200, 140);
-                g.DrawArc(isoPen, 6, 7, 12, 12, 200, 140);
-            }
-            using (var barBrush = new LinearGradientBrush(new RectangleF(18, 4, 3.5f, 16), Color.Yellow, Color.Crimson, 90f))
-            {
-                g.FillRectangle(barBrush, 18f, 4f, 3.5f, 16f);
-                g.DrawRectangle(Pens.White, 18, 4, 3, 16);
-            }
-        }
-
-        // 33. Walk on Mesh & Scalar Gradient
-        private static void DrawWalkOnMesh(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(40, 75, 115), Color.FromArgb(20, 38, 65));
-            PointF[] walk = { new PointF(4, 18), new PointF(8, 12), new PointF(13, 14), new PointF(16, 7), new PointF(20, 5) };
-            using (var walkPen = new Pen(Color.FromArgb(255, 215, 50), 2.0f))
-            {
-                g.DrawLines(walkPen, walk);
-            }
-            foreach (var p in walk)
-                g.FillEllipse(Brushes.White, p.X - 1.8f, p.Y - 1.8f, 3.6f, 3.6f);
-            g.FillEllipse(Brushes.LimeGreen, walk[0].X - 2.2f, walk[0].Y - 2.2f, 4.4f, 4.4f);
-            g.FillEllipse(Brushes.Crimson, walk[4].X - 2.2f, walk[4].Y - 2.2f, 4.4f, 4.4f);
-        }
-
-        // 34. Exact Iso-Cut & Band Slicer
-        private static void DrawIsoCut(Graphics g)
-        {
-            using (var b1 = new SolidBrush(Color.FromArgb(235, 95, 55)))
-                g.FillPie(b1, 1.5f, 1.5f, 21f, 21f, 160, 180);
-            using (var b2 = new SolidBrush(Color.FromArgb(55, 165, 215)))
-                g.FillPie(b2, 1.5f, 1.5f, 21f, 21f, -20, 180);
-            using (var cutPen = new Pen(Color.Gold, 2.5f))
-                g.DrawLine(cutPen, 2.5f, 14.5f, 21.5f, 9.5f);
-            using (var border = new Pen(Color.FromArgb(30, 30, 35), 1.1f))
-                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
-        }
-
-        // 35. Vector Family Discretizer
-        private static void DrawVecFamily(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(30, 36, 50), Color.FromArgb(18, 22, 32));
-            using (var p1 = new Pen(Color.FromArgb(255, 90, 75), 1.8f))
-            using (var p2 = new Pen(Color.FromArgb(65, 215, 255), 1.8f))
-            using (var p3 = new Pen(Color.FromArgb(120, 240, 110), 1.8f))
-            {
-                DrawArrow(g, p1, 4, 10, 10, 5);
-                DrawArrow(g, p1, 5, 15, 11, 10);
-                DrawArrow(g, p2, 11, 16, 19, 16);
-                DrawArrow(g, p2, 11, 20, 19, 20);
-                DrawArrow(g, p3, 14, 11, 18, 4);
-            }
-        }
-
-        // 36. Rolling Spheres & Collision-Free Offset
-        private static void DrawRollSphere(Graphics g)
-        {
-            DrawDiscBackground(g, Color.FromArgb(25, 45, 70), Color.FromArgb(15, 25, 45));
-            using (var surfPen = new Pen(Color.FromArgb(255, 195, 60), 2.0f))
-                g.DrawBezier(surfPen, new PointF(2, 18), new PointF(8, 10), new PointF(16, 20), new PointF(22, 12));
-            using (var sphBrush = new SolidBrush(Color.FromArgb(110, 0, 220, 255)))
-            using (var sphPen = new Pen(Color.FromArgb(230, 120, 245, 255), 1.3f))
-            {
-                g.FillEllipse(sphBrush, 5, 4, 9, 9);
-                g.DrawEllipse(sphPen, 5, 4, 9, 9);
-                g.FillEllipse(sphBrush, 13, 6, 7, 7);
-                g.DrawEllipse(sphPen, 13, 6, 7, 7);
-            }
-        }
-
-        // 37. K-Means Normal & Vector Field Segmenter
-        private static void DrawKMeansSeg(Graphics g)
-        {
-            DrawMeshSeg(g);
-            using (var normPen = new Pen(Color.White, 1.7f))
+            using (var normPen = new Pen(Color.White, 1.6f))
             {
                 DrawArrow(g, normPen, 8, 9, 5, 4);
                 DrawArrow(g, normPen, 15, 9, 19, 5);
@@ -687,7 +460,57 @@ namespace CraneGH.Core
             }
         }
 
-        // 38. Mold Parting Line & Undercuts
+        // CurvSeg: Concave (Blue) vs Convex (Red) split by crisp white H=0 inflection S-curve
+        private static void DrawCurvSeg(Graphics g)
+        {
+            using (var cvxBrush = new SolidBrush(Color.FromArgb(225, 65, 55)))
+                g.FillPie(cvxBrush, 1.5f, 1.5f, 21f, 21f, 135, 180);
+            using (var ccvBrush = new SolidBrush(Color.FromArgb(45, 135, 220)))
+                g.FillPie(ccvBrush, 1.5f, 1.5f, 21f, 21f, -45, 180);
+
+            using (var cutPen = new Pen(Color.White, 2.5f))
+            {
+                g.DrawBezier(cutPen, new PointF(4, 19), new PointF(10, 7), new PointF(14, 17), new PointF(20, 5));
+            }
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
+        }
+
+        // ScalarSeg: Segmented concentric scalar bands with dark seams
+        private static void DrawScalarSeg(Graphics g)
+        {
+            using (var bOuter = new SolidBrush(Color.FromArgb(60, 130, 195)))
+                g.FillEllipse(bOuter, 1.5f, 1.5f, 21f, 21f);
+            using (var bMid = new SolidBrush(Color.FromArgb(0, 175, 145)))
+                g.FillEllipse(bMid, 5.0f, 5.0f, 14f, 14f);
+            using (var bInner = new SolidBrush(Color.FromArgb(245, 175, 55)))
+                g.FillEllipse(bInner, 8.5f, 8.5f, 7f, 7f);
+
+            using (var seamPen = new Pen(Color.FromArgb(25, 28, 35), 1.6f))
+            {
+                g.DrawEllipse(seamPen, 1.5f, 1.5f, 21f, 21f);
+                g.DrawEllipse(seamPen, 5.0f, 5.0f, 14f, 14f);
+                g.DrawEllipse(seamPen, 8.5f, 8.5f, 7f, 7f);
+            }
+        }
+
+        // VecFamily: Quantized vector families on segmented zones
+        private static void DrawVecFamily(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(30, 36, 50), Color.FromArgb(18, 22, 32));
+            using (var p1 = new Pen(Color.FromArgb(255, 90, 75), 1.9f))
+            using (var p2 = new Pen(Color.FromArgb(65, 215, 255), 1.9f))
+            using (var p3 = new Pen(Color.FromArgb(120, 240, 110), 1.9f))
+            {
+                g.DrawLine(p1, 4, 10, 10, 5);
+                g.DrawLine(p1, 5, 15, 11, 10);
+                g.DrawLine(p2, 11, 16, 19, 16);
+                g.DrawLine(p2, 11, 19.5f, 19, 19.5f);
+                g.DrawLine(p3, 14, 11, 18, 4);
+            }
+        }
+
+        // MoldParting: Multi-piece mold + gold parting line + pull vectors
         private static void DrawMoldParting(Graphics g)
         {
             using (var topMold = new SolidBrush(Color.FromArgb(70, 185, 135)))
@@ -701,28 +524,46 @@ namespace CraneGH.Core
                 DrawArrow(g, pullPen, 12, 9, 12, 3);
                 DrawArrow(g, pullPen, 12, 15, 12, 21);
             }
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.1f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
         }
 
-        // 39. Concentric & Spiral Milling Paths
+        // MillingPaths: Concentric toolpaths + offset ball-mill frame
         private static void DrawMillingPaths(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(30, 40, 55), Color.FromArgb(18, 24, 35));
-            using (var pathPen = new Pen(Color.FromArgb(0, 230, 180), 1.5f))
+            DrawDiscBackground(g, Color.FromArgb(28, 38, 54), Color.FromArgb(16, 22, 34));
+            using (var pathPen = new Pen(Color.FromArgb(0, 235, 185), 1.6f))
             {
                 g.DrawEllipse(pathPen, 3.5f, 3.5f, 17f, 17f);
                 g.DrawEllipse(pathPen, 6.8f, 6.8f, 10.4f, 10.4f);
                 g.DrawEllipse(pathPen, 10.0f, 10.0f, 4.0f, 4.0f);
             }
-            using (var toolPen = new Pen(Color.FromArgb(255, 180, 40), 1.8f))
+            using (var toolPen = new Pen(Color.FromArgb(255, 190, 45), 1.9f))
                 DrawArrow(g, toolPen, 15, 12, 20, 5);
         }
 
-        // 40. Iso-Box & Volumetric Shell Subtraction
+        // RollSphere: Tangent rolling spheres on surface
+        private static void DrawRollSphere(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(25, 45, 70), Color.FromArgb(15, 25, 45));
+            using (var surfPen = new Pen(Color.FromArgb(255, 195, 60), 2.1f))
+                g.DrawBezier(surfPen, new PointF(2, 18), new PointF(8, 10), new PointF(16, 20), new PointF(22, 12));
+            using (var sphBrush = new SolidBrush(Color.FromArgb(115, 0, 220, 255)))
+            using (var sphPen = new Pen(Color.FromArgb(235, 120, 245, 255), 1.3f))
+            {
+                g.FillEllipse(sphBrush, 5, 4, 9, 9);
+                g.DrawEllipse(sphPen, 5, 4, 9, 9);
+                g.FillEllipse(sphBrush, 13, 6, 7, 7);
+                g.DrawEllipse(sphPen, 13, 6, 7, 7);
+            }
+        }
+
+        // IsoBoxSub: 3D Heat Offset shell + Subtractive Iso-Boxes
         private static void DrawIsoBoxSub(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(40, 45, 60), Color.FromArgb(22, 26, 36));
-            using (var boxBrush = new SolidBrush(Color.FromArgb(180, 235, 110, 60)))
-            using (var boxPen = new Pen(Color.FromArgb(255, 240, 200, 120), 1.1f))
+            DrawDiscBackground(g, Color.FromArgb(36, 42, 58), Color.FromArgb(20, 24, 34));
+            using (var boxBrush = new SolidBrush(Color.FromArgb(185, 235, 115, 55)))
+            using (var boxPen = new Pen(Color.FromArgb(255, 245, 205, 120), 1.1f))
             {
                 g.FillRectangle(boxBrush, 4, 12, 5, 6);
                 g.DrawRectangle(boxPen, 4, 12, 5, 6);
@@ -731,20 +572,58 @@ namespace CraneGH.Core
                 g.FillRectangle(boxBrush, 14, 5, 5, 13);
                 g.DrawRectangle(boxPen, 14, 5, 5, 13);
             }
+            using (var isoPen = new Pen(Color.FromArgb(0, 235, 255), 1.8f))
+            {
+                g.DrawArc(isoPen, 2.5f, 2.5f, 19f, 19f, 180, 180);
+            }
         }
 
-        // 41. Geodesic TSP & 6-Axis Robot Path
-        private static void DrawGeoTSP(Graphics g)
+        // Skeleton: 3D Medial Axis Skeleton branching graph + cyan medial nodes
+        private static void DrawSkeleton(Graphics g)
         {
-            DrawDiscBackground(g, Color.FromArgb(32, 28, 52), Color.FromArgb(18, 15, 32));
-            PointF[] tour = {
-                new PointF(5, 7), new PointF(12, 4), new PointF(19, 8),
-                new PointF(18, 16), new PointF(11, 19), new PointF(5, 15), new PointF(11, 11), new PointF(5, 7)
-            };
-            using (var tourPen = new Pen(Color.FromArgb(0, 240, 200), 1.8f))
-                g.DrawLines(tourPen, tour);
-            for (int i = 0; i < tour.Length - 1; i++)
-                g.FillEllipse(Brushes.Gold, tour[i].X - 1.8f, tour[i].Y - 1.8f, 3.6f, 3.6f);
+            DrawDiscBackground(g, Color.FromArgb(42, 24, 58), Color.FromArgb(22, 12, 34));
+            using (var skelPen = new Pen(Color.FromArgb(255, 95, 220), 2.3f))
+            {
+                g.DrawLine(skelPen, 5, 18, 10, 12);
+                g.DrawLine(skelPen, 10, 12, 15, 12);
+                g.DrawLine(skelPen, 10, 12, 8, 5);
+                g.DrawLine(skelPen, 15, 12, 19, 6);
+                g.DrawLine(skelPen, 15, 12, 19, 18);
+            }
+            PointF[] nodes = { new PointF(5, 18), new PointF(10, 12), new PointF(15, 12), new PointF(8, 5), new PointF(19, 6), new PointF(19, 18) };
+            foreach (var n in nodes)
+                g.FillEllipse(Brushes.Cyan, n.X - 1.8f, n.Y - 1.8f, 3.6f, 3.6f);
+        }
+
+        // CleanCloud: Denoised cyan point cloud + normal ticks + rejected red outlier dots
+        private static void DrawCleanCloud(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(22, 48, 58), Color.FromArgb(12, 26, 34));
+            using (var surfPen = new Pen(Color.FromArgb(120, 0, 240, 195), 1.4f))
+            {
+                g.DrawEllipse(surfPen, 5.5f, 5.5f, 13f, 13f);
+            }
+            for (int k = 0; k < 8; k++)
+            {
+                double a = k * Math.PI / 4.0;
+                float px = 12f + (float)(6.5 * Math.Cos(a));
+                float py = 12f + (float)(6.5 * Math.Sin(a));
+                g.FillEllipse(Brushes.Cyan, px - 1.6f, py - 1.6f, 3.2f, 3.2f);
+            }
+            // Outliers in red
+            g.FillEllipse(Brushes.Crimson, 3f, 5f, 2.8f, 2.8f);
+            g.FillEllipse(Brushes.Crimson, 18.5f, 17.5f, 2.8f, 2.8f);
+        }
+
+        // MCFlow: Jagged polygon -> Smooth cyan curve
+        private static void DrawMCFlow(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(45, 55, 75), Color.FromArgb(25, 35, 50));
+            PointF[] jagged = { new PointF(4, 15), new PointF(7, 6), new PointF(11, 13), new PointF(15, 5), new PointF(20, 14) };
+            using (var p1 = new Pen(Color.FromArgb(150, 255, 100, 90), 1.2f))
+                g.DrawLines(p1, jagged);
+            using (var p2 = new Pen(Color.FromArgb(80, 230, 190), 2.3f))
+                g.DrawArc(p2, 4, 8, 16, 12, 190, 160);
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)

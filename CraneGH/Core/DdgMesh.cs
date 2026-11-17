@@ -69,6 +69,8 @@ namespace CraneGH.Core
         public readonly Vector3d[] PrincipalDir;
         public readonly double MeanEdgeLength;
         public readonly double MaxEdgeLength;
+        public readonly int[] VertexComponent;
+        public readonly int ConnectedComponentCount;
 
         public DdgMesh(Mesh inputMesh)
         {
@@ -99,6 +101,7 @@ namespace CraneGH.Core
                 VertexOutgoingHalfEdges[i] = new List<int>(6);
 
             VertexOnBoundary = new bool[VertexCount];
+            VertexComponent = new int[VertexCount];
             DualAreas = new double[VertexCount];
             VertexNormals = new Vector3d[VertexCount];
             TangentBasisX = new Vector3d[VertexCount];
@@ -108,7 +111,7 @@ namespace CraneGH.Core
             VertexSharpness = new double[VertexCount];
             PrincipalDir = new Vector3d[VertexCount];
 
-            BuildHalfEdgeTopology();
+            BuildHalfEdgeTopology(out ConnectedComponentCount);
             ComputeGeometricQuantities(out MeanEdgeLength, out MaxEdgeLength);
             InitializeSmoothStructureAndCurvatures();
         }
@@ -116,7 +119,7 @@ namespace CraneGH.Core
         private static Mesh BuildPositionWeldedMesh(Mesh triMesh, out int[] rawToWelded)
         {
             int rawVCount = triMesh.Vertices.Count;
-            rawToWelded = new int[rawVCount];
+            int[] firstPassMap = new int[rawVCount];
             BoundingBox bbox = triMesh.GetBoundingBox(false);
             double diag = Math.Max(1e-6, bbox.Diagonal.Length);
             double invCell = 1e6 / diag; // spatial hash tolerance = 1e-6 * diag
@@ -138,11 +141,46 @@ namespace CraneGH.Core
                     uniquePts.Add(p);
                     cellToVertex[key] = weldedIdx;
                 }
-                rawToWelded[i] = weldedIdx;
+                firstPassMap[i] = weldedIdx;
             }
 
+            // Strip isolated/unreferenced vertices (e.g. stanford-bunny.obj has 1,113 unreferenced vertices!)
+            bool[] used = new bool[uniquePts.Count];
+            for (int f = 0; f < triMesh.Faces.Count; f++)
+            {
+                MeshFace mf = triMesh.Faces[f];
+                int a = firstPassMap[mf.A];
+                int b = firstPassMap[mf.B];
+                int c = firstPassMap[mf.C];
+                if (a != b && b != c && c != a)
+                {
+                    used[a] = true;
+                    used[b] = true;
+                    used[c] = true;
+                }
+            }
+
+            int[] compactMap = new int[uniquePts.Count];
+            var compactPts = new List<Point3d>(uniquePts.Count);
+            for (int i = 0; i < uniquePts.Count; i++)
+            {
+                if (used[i])
+                {
+                    compactMap[i] = compactPts.Count;
+                    compactPts.Add(uniquePts[i]);
+                }
+                else
+                {
+                    compactMap[i] = 0;
+                }
+            }
+
+            rawToWelded = new int[rawVCount];
+            for (int i = 0; i < rawVCount; i++)
+                rawToWelded[i] = compactMap[firstPassMap[i]];
+
             var welded = new Mesh();
-            welded.Vertices.AddVertices(uniquePts);
+            welded.Vertices.AddVertices(compactPts);
             for (int f = 0; f < triMesh.Faces.Count; f++)
             {
                 MeshFace mf = triMesh.Faces[f];
@@ -263,7 +301,7 @@ namespace CraneGH.Core
             return res;
         }
 
-        private void BuildHalfEdgeTopology()
+        private void BuildHalfEdgeTopology(out int componentCount)
         {
             var edgeMap = new Dictionary<long, int>(FaceCount * 3);
 
@@ -331,6 +369,33 @@ namespace CraneGH.Core
                     VertexOnBoundary[e.V1] = true;
                 }
             }
+
+            // Label connected vertex shells (for multi-shell meshes like teapot.obj, suzanne.obj, beetle.obj)
+            for (int i = 0; i < VertexCount; i++) VertexComponent[i] = -1;
+            int compId = 0;
+            var queue = new Queue<int>();
+            for (int i = 0; i < VertexCount; i++)
+            {
+                if (VertexComponent[i] != -1) continue;
+                VertexComponent[i] = compId;
+                queue.Enqueue(i);
+                while (queue.Count > 0)
+                {
+                    int u = queue.Dequeue();
+                    foreach (int heIdx in VertexOutgoingHalfEdges[u])
+                    {
+                        var e = Edges[HalfEdges[heIdx].EdgeIndex];
+                        int nb = (e.V0 == u) ? e.V1 : e.V0;
+                        if (VertexComponent[nb] == -1)
+                        {
+                            VertexComponent[nb] = compId;
+                            queue.Enqueue(nb);
+                        }
+                    }
+                }
+                compId++;
+            }
+            componentCount = Math.Max(1, compId);
         }
 
         private void ComputeGeometricQuantities(out double meanH, out double maxH)

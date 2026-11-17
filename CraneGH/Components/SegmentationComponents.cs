@@ -16,7 +16,7 @@ namespace CraneGH.Components
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.secondary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("SharpEdges");
 
@@ -185,9 +185,11 @@ namespace CraneGH.Components
         public GH_VariationalSurfaceCuts()
           : base("Variational Surface Cuts", "VarCuts",
               "Computes optimal seam cuts on a mesh driven by distortion and optional per-vertex weights (such as Gaussian curvature folds/pliegues) to guide where cuts settle (Sharp & Crane, SIGGRAPH 2018).",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("VarCuts");
 
@@ -235,8 +237,8 @@ namespace CraneGH.Components
 
         public GH_KMeansNormalVectorSegmenter()
           : base("K-Means Normal & Vector Segmenter", "KMeansSeg",
-              "Segments a mesh into K pieces using Variational K-Means++ clustering combining Face Normals, Tangent Vector Field, Spatial Position, and Sharp Crease/Scalar Features. Outputs optimal Mold Pull / CNC Indexing Normals per cluster.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+              "Segments a mesh into K pieces using K-Means clustering on Face Normals and an optional Vector Field, with taut Geodesic Boundary Seams.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -315,11 +317,11 @@ namespace CraneGH.Components
             foreach (var pl in _seams)
                 args.Display.DrawPolyline(pl, Color.FromArgb(30, 30, 35), 2);
 
-            for (int i = 0; i < _clusterNormalArrows.Count; i++)
-            {
-                args.Display.DrawArrow(_clusterNormalArrows[i], Color.Gold);
+            if (_clusterNormalArrows.Count > 0)
+                args.Display.DrawLines(_clusterNormalArrows, Color.Gold, 2);
+
+            for (int i = 0; i < _clusterCenters.Count; i++)
                 args.Display.DrawDot(_clusterCenters[i], $"M{i}", Color.FromArgb(35, 40, 55), Color.White);
-            }
         }
 
         public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000037");
@@ -330,13 +332,13 @@ namespace CraneGH.Components
         private readonly List<Polyline> _cutSeams = new List<Polyline>();
 
         public GH_CurvatureRegimeSegmentation()
-          : base("Curvature Regime & Inflection Cutter", "CurvSeg",
-              "Segments a mesh into Concave and Convex pieces by placing subdivision cut lines at Curvature = 0 Inflection (0), Curvature Maxima Ridges (1), Curvature Minima Valleys (2), or 3-Regime Concave/Flat/Convex Threshold Bands (3).",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("Concave / Convex Curvature Segmenter", "CurvSeg",
+              "Segments a mesh into Concave and Convex pieces at Curvature = 0 Inflection (0), Curvature Maxima Ridges (1), or Curvature Minima Valleys (2).",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("IsoCut");
+        protected override Bitmap Icon => CraneIcons.GetIcon("CurvSeg");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
@@ -403,5 +405,76 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000045");
+    }
+
+    public class GH_ScalarIsoBandSegmenter : GH_Component
+    {
+        private readonly List<Polyline> _seams = new List<Polyline>();
+
+        public GH_ScalarIsoBandSegmenter()
+          : base("Scalar & Geodesic Band Segmenter", "ScalarSeg",
+              "Segments a mesh into K clean sub-mesh pieces and boundary curves across the level-sets of any Scalar Field (Heat Distance, Curvature, Height, or Relevance).",
+              "CraneGH", "04. Segmentation & Fabrication")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("ScalarSeg");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh to segment", GH_ParamAccess.item);
+            int idxS = pManager.AddNumberParameter("Scalar Field", "S", "Scalar values per vertex or face (leave empty for automatic Geodesic Distance)", GH_ParamAccess.list);
+            pManager[idxS].Optional = true;
+            pManager.AddNumberParameter("Bands or Thresholds", "K", "Single integer >= 2 (e.g. 5) for K equal scalar bands, or list of exact threshold values", GH_ParamAccess.list, 5.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented mesh pieces per scalar band", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Boundary Curves", "BC", "Smooth iso-contour boundary curves between bands", GH_ParamAccess.list);
+            pManager.AddIntegerParameter("Band Labels", "ID", "Band index (0..K-1) per triangle face", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by scalar band", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _seams.Clear();
+
+            Mesh m = null;
+            var sList = new List<double>();
+            var kVals = new List<double>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, sList);
+            if (!DA.GetDataList(2, kVals) || kVals.Count == 0) kVals.Add(5.0);
+
+            var ddg = new DdgMesh(m);
+            List<Mesh> subMeshes = DdgAlgorithms.ComputeScalarBandMeshSegmentation(
+                ddg,
+                sList.Count > 0 ? sList : null,
+                kVals,
+                out List<Polyline> bCrvs,
+                out int[] labels,
+                out Mesh coloredM);
+
+            _seams.AddRange(bCrvs);
+
+            DA.SetDataList(0, subMeshes);
+            DA.SetDataList(1, bCrvs);
+            DA.SetDataList(2, labels);
+            DA.SetData(3, coloredM);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _seams.Count == 0) return;
+
+            Color cSeam = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(25, 28, 35);
+            foreach (var pl in _seams)
+                args.Display.DrawPolyline(pl, cSeam, 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000053");
     }
 }

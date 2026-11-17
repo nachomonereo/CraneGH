@@ -14,8 +14,8 @@ namespace CraneGH.Components
 
         public GH_HeatDistance()
           : base("Heat Geodesic Distance", "HeatDist",
-              "Computes geodesic distance and smoothed gradient on a mesh from ANY external geometry (Points, Curves, Meshes, or Breps) using Keenan Crane's Heat Method (ACM TOG 2013).",
-              "CraneGH", "02. Geodesics & Iso-Cut")
+              "Computes geodesic distance and smoothed gradient on a mesh from any external geometry (Points, Curves, Meshes) or mesh boundary.",
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 
@@ -152,7 +152,7 @@ namespace CraneGH.Components
         public GH_GeodesicShortestPath()
           : base("Geodesic Shortest Path", "GeoPath",
               "Traces exact shortest geodesic paths on a mesh from target points down the negative gradient of a Heat Distance field.",
-              "CraneGH", "02. Geodesics & Iso-Cut")
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 
@@ -250,7 +250,7 @@ namespace CraneGH.Components
         public GH_ExactIsoCut()
           : base("Iso-Splitting Curves", "IsoCut",
               "Extracts fast Iso-Splitting Curves on a mesh from any Scalar Field, Smoothed Scalar/Mesh, or Scalar Gradient (without slicing the mesh).",
-              "CraneGH", "02. Geodesics & Iso-Cut")
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 

@@ -14,9 +14,9 @@ namespace CraneGH.Components
         private readonly List<Point3d> _gougePts = new List<Point3d>();
 
         public GH_RollingSpheresOffset()
-          : base("Rolling Spheres & Collision Offset", "RollSphere",
-              "Computes Tangent-Point Rolling Spheres (Keenan Crane's Repulsive Surfaces 2021) for CNC Ball-Mill gouge detection (+R exterior), Medial Wall Thickness (-R interior), and collision-free mesh offsetting.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("Rolling-Sphere Offset & Gouge", "RollSphere",
+              "Computes Tangent-Point Rolling Spheres (+R exterior clearance / -R interior thickness) and a collision-free Offset Mesh.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -99,9 +99,9 @@ namespace CraneGH.Components
         private readonly List<string> _pieceTags = new List<string>();
 
         public GH_MoldPartingAnalyzer()
-          : base("Multi-Piece Mold & Draft Cut", "MultiMold",
-              "Partitions a 3D mesh into K extractable Mold Pieces using Multiple Pull Vectors (or automatic Curvature-driven pull discovery) combined with Heat Geodesic Distance, Draft Angle analysis, and Curvature Parting Line snapping.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("Multi-Piece Mold Segmenter", "MultiMold",
+              "Partitions a 3D mesh into K extractable Mold Pieces with Pull Vectors, Parting Lines, and Draft Angle analysis.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -189,11 +189,11 @@ namespace CraneGH.Components
             foreach (var pl in _partingLines)
                 args.Display.DrawPolyline(pl, Color.Gold, 4);
 
-            for (int i = 0; i < _pullArrows.Count; i++)
-            {
-                args.Display.DrawArrow(_pullArrows[i], Color.FromArgb(60, 235, 165));
+            if (_pullArrows.Count > 0)
+                args.Display.DrawLines(_pullArrows, Color.FromArgb(60, 235, 165), 2);
+
+            for (int i = 0; i < _pieceCenters.Count; i++)
                 args.Display.DrawDot(_pieceCenters[i], _pieceTags[i], Color.FromArgb(30, 38, 52), Color.White);
-            }
         }
 
         public override Guid ComponentGuid => new Guid("A109B209-C309-4D09-9E09-000000000038");
@@ -206,9 +206,9 @@ namespace CraneGH.Components
         private double _axisScale = 1.0;
 
         public GH_ConcentricMillingToolpaths()
-          : base("Milling & 3D Print Iso-Paths", "FabPaths",
-              "Generates concentric CNC Milling & Curved-Layer 3D Printing paths at exact Stepover/Pitch D from any external source geometry, with Ball-Mill offset and Collision-Smoothed 5/6-Axis Planes.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("Milling & Print Iso-Paths", "FabPaths",
+              "Generates concentric Milling or 3D Printing Iso-Paths at Stepover D and computes the Rolling-Sphere Offset Mesh (OffsetGeo) and Offset Toolpaths.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -330,9 +330,9 @@ namespace CraneGH.Components
         private readonly List<Box> _boxes = new List<Box>();
 
         public GH_IsoBoxSubtraction()
-          : base("3D Heat Offset & Vector Isosurface", "HeatIsoSurf",
-              "Reconstructs a watertight 3D Offset Mesh, Smooth Boolean Union Isosurface, and Subtractive Iso-Boxes from multiple Meshes, Curves, or a 3D Vector Field (Signed Heat Method + Marching Tetrahedra).",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("3D Heat Offset & Isosurface", "HeatIsoSurf",
+              "Reconstructs a watertight 3D Offset Mesh, Smooth Boolean Union Isosurface, and Subtractive Iso-Boxes from Meshes, Curves, or a Vector Field.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -407,9 +407,11 @@ namespace CraneGH.Components
         public GH_GeodesicTSPRobot()
           : base("Geodesic TSP & Robot Plane Smooth", "RobotPlanes",
               "Computes shortest Geodesic TSP trajectories on a mesh AND smooths/stabilizes 6-Axis Robot or CNC Planes in SO(3) to eliminate drastic turns and avoid mesh concavities/collisions.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("GeoTSP");
 
@@ -534,13 +536,13 @@ namespace CraneGH.Components
         private readonly List<Point3d> _medialNodes = new List<Point3d>();
 
         public GH_MeshMedialSkeleton()
-          : base("Mesh Medial Skeleton & Spine", "Skeleton",
-              "Extracts the 3D Medial Axis Skeleton Curves and Shrinking-Ball Spine of a mesh via Implicit Mean Curvature Contraction and Tangent-Point Inscribed Spheres.",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+          : base("Medial Axis Skeleton", "Skeleton",
+              "Extracts the 3D Medial Axis Skeleton Curves, Contracted Spine Mesh, and local wall-thickness radii of a 3D mesh.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("WalkOnMesh");
+        protected override Bitmap Icon => CraneIcons.GetIcon("Skeleton");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
@@ -617,11 +619,13 @@ namespace CraneGH.Components
         public GH_RepulsiveShellsRobotPath()
           : base("Repulsive Shells & C-Space Robot Path", "RepulsiveBot",
               "Computes optimal collision- & singularity-free Robot Toolpaths from A to B and builds the 2D Configuration-Space (C-Space) Geodesic Map (Sassen, Schumacher, Rumpf, Wardetzky, Crane 'Repulsive Shells').",
-              "CraneGH", "05. Mold, Segmentation & CAM")
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("GeodesicPath");
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GeoPath");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {

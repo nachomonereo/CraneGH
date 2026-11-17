@@ -679,7 +679,7 @@ namespace CraneGH.Core
                 // Stretch & shorten cluster boundaries into taut Geodesic Curves on the mesh (FlipOut / Geodesic Network Shorten)
                 var seamCurves = rawBoundaryCurves.ConvertAll(pl => (Curve)new PolylineCurve(pl));
                 boundaryCurves = ComputeGeodesicNetworkShorten(
-                    mesh.RhinoMesh, seamCurves, 14, true, out _, creaseFeatureWeight > 0.1 ? vertFeat : null);
+                    mesh.RhinoMesh, seamCurves, 14, true, out _, null);
             }
             else
             {
@@ -797,8 +797,8 @@ namespace CraneGH.Core
                 ? Math.Abs(targetToolOrOffsetRadius)
                 : 2.0 * mesh.MeanEdgeLength;
 
-            // Subsample witness points if mesh is very dense (> 1500 vertices) for instant interactive performance
-            int stride = Math.Max(1, nV / 1200);
+            // Subsample witness points if mesh is very dense (> 450 vertices) for instant interactive performance
+            int stride = Math.Max(1, nV / 450);
             var sampleIndices = new List<int>(nV / stride + 1);
             for (int i = 0; i < nV; i += stride)
                 sampleIndices.Add(i);
@@ -5323,6 +5323,182 @@ namespace CraneGH.Core
             }
 
             return cleanedPoints;
+        }
+
+        // =========================================================================================
+        // 30. TANGENT VECTOR ROTATION ON MESH (Uniform Angle or Per-Vertex Scalar Field Twist)
+        // =========================================================================================
+        public static Vector3d[] RotateTangentVectorsOnMesh(
+            DdgMesh mesh,
+            IList<Vector3d> inputVectors,
+            IList<double> angleDegreesList,
+            out Vector3d[] orthoVectors,
+            out List<Line> previewLines)
+        {
+            int nV = mesh.VertexCount;
+            Vector3d[] baseVecs = (inputVectors != null && inputVectors.Count > 0)
+                ? mesh.MapVectorInputToVertices(inputVectors)
+                : mesh.PrincipalDir;
+
+            double[] anglesDeg;
+            if (angleDegreesList == null || angleDegreesList.Count == 0)
+            {
+                anglesDeg = new double[nV];
+                for (int i = 0; i < nV; i++) anglesDeg[i] = 90.0;
+            }
+            else if (angleDegreesList.Count == 1)
+            {
+                double a0 = angleDegreesList[0];
+                anglesDeg = new double[nV];
+                for (int i = 0; i < nV; i++) anglesDeg[i] = a0;
+            }
+            else
+            {
+                anglesDeg = mesh.MapScalarInputToVertices(angleDegreesList);
+            }
+
+            var rotated = new Vector3d[nV];
+            orthoVectors = new Vector3d[nV];
+            previewLines = new List<Line>();
+
+            double segLen = 0.65 * mesh.MeanEdgeLength;
+            int stride = Math.Max(1, nV / 800);
+
+            for (int i = 0; i < nV; i++)
+            {
+                Vector3d n = mesh.VertexNormals[i];
+                Vector3d v = baseVecs[i];
+                double mag = v.Length;
+                // Project onto tangent plane
+                v -= (v * n) * n;
+                if (v.Length < 1e-12)
+                {
+                    v = mesh.TangentBasisX[i];
+                    mag = 1.0;
+                }
+                else
+                {
+                    v.Unitize();
+                }
+
+                Vector3d w = Vector3d.CrossProduct(n, v);
+                if (w.Length > 1e-12) w.Unitize();
+
+                double rad = anglesDeg[i] * (Math.PI / 180.0);
+                double c = Math.Cos(rad);
+                double s = Math.Sin(rad);
+
+                Vector3d vRot = (c * v + s * w) * (mag > 1e-12 ? mag : 1.0);
+                Vector3d vOrtho = (-s * v + c * w) * (mag > 1e-12 ? mag : 1.0);
+
+                rotated[i] = vRot;
+                orthoVectors[i] = vOrtho;
+
+                if (i % stride == 0 && vRot.Length > 1e-12)
+                {
+                    Vector3d dir = vRot / vRot.Length;
+                    Point3d p = mesh.Positions[i];
+                    previewLines.Add(new Line(p - 0.5 * segLen * dir, p + 0.5 * segLen * dir));
+                }
+            }
+
+            return rotated;
+        }
+
+        // =========================================================================================
+        // 31. SCALAR & GEODESIC BAND MESH SEGMENTATION (Clean Sub-Meshes & Geodesic Seams)
+        // =========================================================================================
+        public static List<Mesh> ComputeScalarBandMeshSegmentation(
+            DdgMesh mesh,
+            IList<double> scalarInput,
+            IList<double> bandsOrThresholds,
+            out List<Polyline> boundaryCurves,
+            out int[] faceLabels,
+            out Mesh coloredMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+
+            double[] u;
+            if (scalarInput != null && scalarInput.Count > 0)
+            {
+                u = mesh.MapScalarInputToVertices(scalarInput);
+            }
+            else
+            {
+                u = ComputeHeatDistance(mesh, new int[] { 0 }, 1.0, out _, out _);
+            }
+
+            double uMin = double.MaxValue, uMax = double.MinValue;
+            for (int i = 0; i < nV; i++)
+            {
+                if (u[i] < uMin) uMin = u[i];
+                if (u[i] > uMax) uMax = u[i];
+            }
+            double uSpan = Math.Max(1e-12, uMax - uMin);
+
+            // Determine threshold splits
+            var thresholds = new List<double>();
+            if (bandsOrThresholds == null || bandsOrThresholds.Count == 0)
+            {
+                int kBands = 5;
+                for (int k = 1; k < kBands; k++)
+                    thresholds.Add(uMin + (k / (double)kBands) * uSpan);
+            }
+            else if (bandsOrThresholds.Count == 1 && bandsOrThresholds[0] >= 2.0 && Math.Abs(bandsOrThresholds[0] - Math.Round(bandsOrThresholds[0])) < 1e-5 && (bandsOrThresholds[0] > uMax || uMin >= 0.0))
+            {
+                int kBands = Math.Max(2, Math.Min(64, (int)Math.Round(bandsOrThresholds[0])));
+                for (int k = 1; k < kBands; k++)
+                    thresholds.Add(uMin + (k / (double)kBands) * uSpan);
+            }
+            else
+            {
+                foreach (double val in bandsOrThresholds)
+                    thresholds.Add(val);
+                thresholds.Sort();
+            }
+
+            int numRegions = thresholds.Count + 1;
+            faceLabels = new int[nF];
+
+            for (int f = 0; f < nF; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                double fVal = (u[fv[0]] + u[fv[1]] + u[fv[2]]) / 3.0;
+                int band = 0;
+                while (band < thresholds.Count && fVal >= thresholds[band])
+                    band++;
+                faceLabels[f] = band;
+            }
+
+            // Smooth isolated 1-triangle jagged spikes along band borders
+            int[] smoothed = new int[nF];
+            Array.Copy(faceLabels, smoothed, nF);
+            for (int f = 0; f < nF; f++)
+            {
+                int baseHe = f * 3;
+                int same = 0;
+                int altLabel = faceLabels[f];
+                for (int c = 0; c < 3; c++)
+                {
+                    int twin = mesh.HalfEdges[baseHe + c].Twin;
+                    if (twin != -1)
+                    {
+                        int nf = mesh.HalfEdges[twin].FaceIndex;
+                        if (faceLabels[nf] == faceLabels[f]) same++;
+                        else altLabel = faceLabels[nf];
+                    }
+                }
+                if (same == 0) smoothed[f] = altLabel;
+            }
+            faceLabels = smoothed;
+
+            Color[] palette = GenerateDistinctPalette(Math.Max(2, numRegions));
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, numRegions, palette, out coloredMesh);
+
+            // Extract exact smooth iso-contour curves at the thresholds as boundary curves!
+            boundaryCurves = mesh.ExtractIsoContours(u, thresholds);
+            return subMeshes;
         }
     }
 }

@@ -17,6 +17,8 @@ namespace CraneGH.Components
         {
         }
 
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
+
         protected override Bitmap Icon => CraneIcons.GetIcon("SpinXForm");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -213,9 +215,9 @@ namespace CraneGH.Components
     public class GH_GeodesicLoopShorten : GH_Component
     {
         public GH_GeodesicLoopShorten()
-          : base("Geodesic Network Shorten", "FlipOut",
-              "Shortens curves, loops, or multi-curve networks on a mesh into taut geodesics; shared junction nodes and endpoints lying on other curves slide and tension automatically (Sharp & Crane 2020).",
-              "CraneGH", "02. Geodesics & Iso-Cut")
+          : base("Geodesic Curve Shorten", "FlipOut",
+              "Shortens curves, loops, or multi-curve networks on a mesh into taut geodesics.",
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 
@@ -266,7 +268,7 @@ namespace CraneGH.Components
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.secondary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("RepCurve");
 
@@ -404,6 +406,8 @@ namespace CraneGH.Components
         {
         }
 
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
+
         protected override Bitmap Icon => CraneIcons.GetIcon("SpinXForm");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
@@ -503,13 +507,13 @@ namespace CraneGH.Components
         private Mesh _reconstructedMesh;
 
         public GH_PointCloudCleanAndSignedDistance()
-          : base("Point Cloud Clean & Fast Signed Distance", "CleanCloud",
-              "Cleans noisy 3D Point Clouds (statistical outlier removal + zero-isosurface projection), estimates globally consistent normals, and evaluates Fast Pointwise Signed Distance & Surface Reconstruction (Feng & Crane 'Points as Tori / Signed Heat').",
-              "CraneGH", "02. Geodesics & Iso-Cut")
+          : base("Point Cloud Clean & Signed Distance", "CleanCloud",
+              "Cleans noisy 3D Point Clouds, estimates globally consistent normals, and evaluates Fast Pointwise Signed Distance & Surface Reconstruction.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("SignDist");
+        protected override Bitmap Icon => CraneIcons.GetIcon("CleanCloud");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {

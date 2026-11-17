@@ -11,8 +11,8 @@ namespace CraneGH.Components
     {
         public GH_DiscreteCurvatures()
           : base("Discrete Curvatures", "Curvatures",
-              "Computes Discrete Gaussian Curvature (angle defect), Mean Curvature (Cotan-Laplace), Principal Curvature Direction, and Dual Area per mesh vertex.",
-              "CraneGH", "01. Operators & Display")
+              "Computes Gaussian Curvature (K), Mean Curvature (H), and Principal Curvature Direction (D) per mesh vertex.",
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 
@@ -51,9 +51,9 @@ namespace CraneGH.Components
     public class GH_MeanCurvatureFlow : GH_Component
     {
         public GH_MeanCurvatureFlow()
-          : base("Mean Curvature Smooth", "MCFlow",
-              "Implicit Mean Curvature Flow (M + t*Lc) X = M*X0 using the Discrete Cotan-Laplacian.",
-              "CraneGH", "01. Operators & Display")
+          : base("Mean Curvature Mesh Smooth", "MCFlow",
+              "Smooths 3D mesh geometry using implicit Cotan-Laplace Mean Curvature Flow.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -242,9 +242,9 @@ namespace CraneGH.Components
     public class GH_ScalarFieldSmooth : GH_Component
     {
         public GH_ScalarFieldSmooth()
-          : base("Scalar Field Smooth", "SmoothScalar",
-              "Smooths any noisy scalar field (such as Gaussian Curvature K, Mean Curvature H, or custom weights) using implicit Cotan-Laplace diffusion with optional sharp-crease preservation.",
-              "CraneGH", "01. Operators & Display")
+          : base("Smooth Scalar Field", "SmoothScalar",
+              "Smooths any scalar field on a mesh via macro-scale Cotan-Laplace diffusion while preserving its original [Min, Max] range.",
+              "CraneGH", "02. Scalar & Geodesics")
         {
         }
 
@@ -295,9 +295,9 @@ namespace CraneGH.Components
         private readonly List<Line> _gradArrows = new List<Line>();
 
         public GH_WalkOnMeshGradient()
-          : base("Walk on Mesh & Scalar Gradient", "WalkOnMesh",
-              "Computes the intrinsic surface gradient of any scalar field and walks on the mesh from seed points along Steepest Descent (-grad u), Ascent (+grad u), Iso-Contour (ortho), or Stochastic Geodesic Walk.",
-              "CraneGH", "01. Operators & Display")
+          : base("Walk on Mesh & Gradient", "WalkOnMesh",
+              "Computes the intrinsic surface gradient of a scalar field and traces paths along Steepest Descent (0), Ascent (1), Iso-Contour (2), or Stochastic Walk (3).",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
@@ -389,9 +389,9 @@ namespace CraneGH.Components
         private bool _showTags = true;
 
         public GH_MeshScalarDisplay()
-          : base("Mesh Scalar Inspector & Display", "ScalarView",
-              "Evaluates and visualizes any scalar field on a mesh with scientific colormaps (Heat, CoolWarm, Viridis, Turbo, Zebra), live iso-contours, and 3D Min/Max value tags.",
-              "CraneGH", "01. Operators & Display")
+          : base("Scalar Field Visualizer", "ScalarView",
+              "Visualizes any scalar field on a mesh with scientific colormaps (0=Heat, 1=CoolWarm, 2=Viridis, 3=Turbo, 4=Zebra), iso-lines, and 3D Min/Max value tags.",
+              "CraneGH", "01. Visualizers")
         {
         }
 
@@ -480,5 +480,168 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000032");
+    }
+
+    public class GH_ScalarGradientVisualizer : GH_Component
+    {
+        private readonly List<Line> _gradLines = new List<Line>();
+        private readonly List<Line> _wavefrontTicks = new List<Line>();
+        private Mesh _slopeMesh;
+
+        public GH_ScalarGradientVisualizer()
+          : base("Scalar Gradient Visualizer", "GradView",
+              "Computes and visualizes the intrinsic Geodesic / Scalar Gradient (grad S) and orthogonal iso-wavefront ticks using lightweight GPU segments, coloring the mesh by slope ||grad S||.",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GradView");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Scalar Field", "S", "Scalar values per vertex or face", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Segment Scale", "L", "Visual segment length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddVectorParameter("Gradient Vectors", "G", "Intrinsic scalar gradient vector per vertex", GH_ParamAccess.list);
+            pManager.AddLineParameter("Gradient Segments", "L", "3D directional gradient line segments", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Slope Mesh", "CM", "Mesh colored by gradient slope magnitude ||grad S||", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _gradLines.Clear();
+            _wavefrontTicks.Clear();
+            _slopeMesh = null;
+
+            Mesh m = null;
+            var sList = new List<double>();
+            double scale = 0.75;
+            if (!DA.GetData(0, ref m) || m == null) return;
+            if (!DA.GetDataList(1, sList) || sList.Count == 0) return;
+            DA.GetData(2, ref scale);
+
+            var ddg = new DdgMesh(m);
+            double[] u = ddg.MapScalarInputToVertices(sList);
+            ddg.ComputeGradient(u, out _, out Vector3d[] vGrad);
+
+            DdgAlgorithms.ComputeVectorFieldGradientsAndGlyphs(
+                ddg, null, u, scale, 2,
+                out List<Line> primLines,
+                out List<Line> orthoLines,
+                out _, out _, out _,
+                out _slopeMesh,
+                out _);
+
+            _gradLines.AddRange(primLines);
+            _wavefrontTicks.AddRange(orthoLines);
+
+            DA.SetDataList(0, vGrad);
+            DA.SetDataList(1, primLines);
+            DA.SetData(2, _slopeMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _gradLines.Count == 0) return;
+
+            Color cPrim = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 235, 255);
+            args.Display.DrawLines(_gradLines, cPrim, 2);
+            if (_wavefrontTicks.Count > 0)
+                args.Display.DrawLines(_wavefrontTicks, Color.FromArgb(180, 255, 230, 140), 1);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000051");
+    }
+
+    public class GH_CrossFieldVisualizer : GH_Component
+    {
+        private readonly List<Line> _uLines = new List<Line>();
+        private readonly List<Line> _vLines = new List<Line>();
+        private Mesh _analysisMesh;
+
+        public GH_CrossFieldVisualizer()
+          : base("X-Cross & Div/Curl Visualizer", "CrossView",
+              "Visualizes any Vector Field V as lightweight 4-RoSy X-Crosses and computes its Divergence (div V), Rotor/Curl (curl V), and Covariant Vector Gradient.",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("CrossView");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxV = pManager.AddVectorParameter("Vectors", "V", "Tangent vector field per vertex or face (leave empty for Principal Curvature X-Crosses)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            pManager.AddNumberParameter("Cross Scale", "L", "Visual scale multiplier for the X-Cross segments", GH_ParamAccess.item, 0.70);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddLineParameter("X-Cross Lines", "Crx", "Lightweight 4-way X-cross line segments", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Divergence", "Div", "Discrete Divergence (div V) per vertex", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Curl / Rotor", "Curl", "Discrete Curl ((nabla x V) . N) per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by local Curl / Rotation intensity", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _uLines.Clear();
+            _vLines.Clear();
+            _analysisMesh = null;
+
+            Mesh m = null;
+            var inVecs = new List<Vector3d>();
+            double scale = 0.70;
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, inVecs);
+            DA.GetData(2, ref scale);
+
+            var ddg = new DdgMesh(m);
+            DdgAlgorithms.ComputeVectorFieldGradientsAndGlyphs(
+                ddg,
+                inVecs.Count > 0 ? inVecs : null,
+                null,
+                scale,
+                1,
+                out List<Line> primLines,
+                out List<Line> orthoLines,
+                out _,
+                out double[] div,
+                out double[] curl,
+                out _analysisMesh,
+                out _);
+
+            _uLines.AddRange(primLines);
+            _vLines.AddRange(orthoLines);
+
+            var allCross = new List<Line>(primLines.Count + orthoLines.Count);
+            allCross.AddRange(primLines);
+            allCross.AddRange(orthoLines);
+
+            DA.SetDataList(0, allCross);
+            DA.SetDataList(1, div);
+            DA.SetDataList(2, curl);
+            DA.SetData(3, _analysisMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _uLines.Count == 0) return;
+
+            Color cU = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 230, 255);
+            Color cV = Attributes.Selected ? Color.FromArgb(255, 160, 60) : Color.FromArgb(255, 95, 85);
+            args.Display.DrawLines(_uLines, cU, 2);
+            if (_vLines.Count > 0)
+                args.Display.DrawLines(_vLines, cV, 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000052");
     }
 }

@@ -26,16 +26,68 @@ namespace CraneGH.Core
                 heatBuilder.Add(i, i, mesh.DualAreas[i]);
 
             double[] rhs = new double[n];
-            bool anySource = false;
-            foreach (int src in sourceVertices)
+            var activeSources = new List<int>();
+            bool[] compHasSource = new bool[mesh.ConnectedComponentCount];
+
+            if (sourceVertices != null)
             {
-                if (src >= 0 && src < n)
+                foreach (int src in sourceVertices)
                 {
-                    rhs[src] = 1.0;
-                    anySource = true;
+                    if (src >= 0 && src < n)
+                    {
+                        rhs[src] = 1.0;
+                        activeSources.Add(src);
+                        compHasSource[mesh.VertexComponent[src]] = true;
+                    }
                 }
             }
-            if (!anySource && n > 0) rhs[0] = 1.0;
+            if (activeSources.Count == 0 && n > 0)
+            {
+                rhs[0] = 1.0;
+                activeSources.Add(0);
+                compHasSource[mesh.VertexComponent[0]] = true;
+            }
+
+            // Multi-shell support (teapot.obj, suzanne.obj, beetle.obj):
+            // Ensure every disconnected shell receives a bridge heat seed closest to the primary source!
+            double[] compBaseOffset = new double[mesh.ConnectedComponentCount];
+            if (mesh.ConnectedComponentCount > 1 && activeSources.Count > 0)
+            {
+                double[] bestDistSq = new double[mesh.ConnectedComponentCount];
+                int[] bestVert = new int[mesh.ConnectedComponentCount];
+                for (int c = 0; c < mesh.ConnectedComponentCount; c++)
+                {
+                    bestDistSq[c] = double.MaxValue;
+                    bestVert[c] = -1;
+                }
+
+                // Sample up to 64 active sources to find nearest bridge vertex on unseeded shells
+                int srcStride = Math.Max(1, activeSources.Count / 64);
+                for (int i = 0; i < n; i++)
+                {
+                    int c = mesh.VertexComponent[i];
+                    if (compHasSource[c]) continue;
+                    Point3d pi = mesh.Positions[i];
+                    for (int s = 0; s < activeSources.Count; s += srcStride)
+                    {
+                        double d2 = pi.DistanceToSquared(mesh.Positions[activeSources[s]]);
+                        if (d2 < bestDistSq[c])
+                        {
+                            bestDistSq[c] = d2;
+                            bestVert[c] = i;
+                        }
+                    }
+                }
+
+                for (int c = 0; c < mesh.ConnectedComponentCount; c++)
+                {
+                    if (!compHasSource[c] && bestVert[c] >= 0)
+                    {
+                        rhs[bestVert[c]] = 1.0;
+                        compBaseOffset[c] = Math.Sqrt(bestDistSq[c]);
+                    }
+                }
+            }
 
             CsrMatrix heatMat = heatBuilder.Build();
             double[] u = SparseLinearSolver.SolvePCG(heatMat, rhs, 1200, 1e-8);
@@ -57,11 +109,21 @@ namespace CraneGH.Core
 
             double[] phi = SparseLinearSolver.SolvePCG(lapMat, divX, 1500, 1e-8);
 
-            double minPhi = double.MaxValue;
+            // Shift phi per connected component so each shell starts at its exact 3D Euclidean bridge distance!
+            double[] minPhiPerComp = new double[mesh.ConnectedComponentCount];
+            for (int c = 0; c < mesh.ConnectedComponentCount; c++)
+                minPhiPerComp[c] = double.MaxValue;
+
             for (int i = 0; i < n; i++)
-                if (phi[i] < minPhi) minPhi = phi[i];
+            {
+                int c = mesh.VertexComponent[i];
+                if (phi[i] < minPhiPerComp[c]) minPhiPerComp[c] = phi[i];
+            }
             for (int i = 0; i < n; i++)
-                phi[i] -= minPhi;
+            {
+                int c = mesh.VertexComponent[i];
+                phi[i] = (phi[i] - minPhiPerComp[c]) + compBaseOffset[c];
+            }
 
             mesh.ComputeGradient(phi, out _, out vertexGradients);
             for (int i = 0; i < n; i++)
@@ -469,7 +531,8 @@ namespace CraneGH.Core
             int symmetryDegree,
             out List<Polyline> equidistantStripeCurves,
             out List<Point3d> branchPoints,
-            IList<double> optionalDensityScalar = null)
+            IList<double> optionalDensityScalar = null,
+            bool touchEnds = false)
         {
             int nV = mesh.VertexCount;
             double spacing = stripeSpacingDistance > 1e-6 ? stripeSpacingDistance : 2.5 * mesh.MeanEdgeLength;
@@ -802,7 +865,34 @@ namespace CraneGH.Core
 
                 if (Math.Abs(nBranch) >= 1.0)
                 {
-                    branchPoints.Add(mesh.FaceCenters[f]);
+                    Point3d bCenter = mesh.FaceCenters[f];
+                    branchPoints.Add(bCenter);
+
+                    if (touchEnds)
+                    {
+                        // Connect the incoming stripe crossings on the 3 edges of the singularity triangle
+                        // directly to the branch center so the Y-bifurcation lines touch at their ends!
+                        Point3d pI_b = mesh.Positions[vi];
+                        Point3d pJ_b = mesh.Positions[vj];
+                        Point3d pK_b = mesh.Positions[vk];
+                        double minB = Math.Min(alphaI, Math.Min(alphaJ, alphaK)) - 2.0 * Math.PI;
+                        double maxB = Math.Max(alphaI, Math.Max(alphaJ, alphaK)) + 2.0 * Math.PI;
+                        int m0 = (int)Math.Ceiling(minB / (2.0 * Math.PI));
+                        int m1 = (int)Math.Floor(maxB / (2.0 * Math.PI));
+                        for (int m = m0; m <= m1; m++)
+                        {
+                            double targ = 2.0 * Math.PI * m;
+                            var bPts = new List<Point3d>(3);
+                            TryTriangleEdgeIso(pI_b, pJ_b, alphaI - targ, alphaJ - targ, bPts);
+                            TryTriangleEdgeIso(pJ_b, pK_b, alphaJ - targ, alphaK - targ, bPts);
+                            TryTriangleEdgeIso(pK_b, pI_b, alphaK - targ, alphaI - targ, bPts);
+                            foreach (Point3d bp in bPts)
+                            {
+                                if (bp.DistanceToSquared(bCenter) > 1e-14)
+                                    stripeSegments.Add(new Line(bp, bCenter));
+                            }
+                        }
+                    }
                     continue;
                 }
 
@@ -834,12 +924,38 @@ namespace CraneGH.Core
             equidistantStripeCurves = new List<Polyline>();
             if (stripeSegments.Count > 0)
             {
-                Curve[] joined = Curve.JoinCurves(stripeSegments.ConvertAll(s => (Curve)new LineCurve(s)), mesh.MeanEdgeLength * 0.05);
+                double joinTol = touchEnds ? mesh.MeanEdgeLength * 0.25 : mesh.MeanEdgeLength * 0.02;
+                Curve[] joined = Curve.JoinCurves(stripeSegments.ConvertAll(s => (Curve)new LineCurve(s)), joinTol);
                 if (joined != null)
                 {
+                    double trimGap = Math.Max(0.35 * mesh.MeanEdgeLength, 0.22 * spacing);
                     foreach (var crv in joined)
                     {
-                        if (crv.TryGetPolyline(out Polyline pl))
+                        if (!crv.TryGetPolyline(out Polyline pl) || pl.Count < 2) continue;
+
+                        if (!touchEnds)
+                        {
+                            // Ensure ends do NOT touch at closed loops or near branch points!
+                            if (pl.Count >= 4 && pl[0].DistanceTo(pl[pl.Count - 1]) < mesh.MeanEdgeLength * 0.5)
+                            {
+                                // Open closed loop by trimming last segment so ends don't touch
+                                pl.RemoveAt(pl.Count - 1);
+                            }
+
+                            // Trim endpoints that come too close to a Y-branch point so bifurcations stay separated
+                            if (branchPoints.Count > 0 && pl.Count >= 3)
+                            {
+                                foreach (Point3d bp in branchPoints)
+                                {
+                                    while (pl.Count >= 3 && pl[0].DistanceTo(bp) < trimGap)
+                                        pl.RemoveAt(0);
+                                    while (pl.Count >= 3 && pl[pl.Count - 1].DistanceTo(bp) < trimGap)
+                                        pl.RemoveAt(pl.Count - 1);
+                                }
+                            }
+                        }
+
+                        if (pl.Count >= 2)
                             equidistantStripeCurves.Add(pl);
                     }
                 }

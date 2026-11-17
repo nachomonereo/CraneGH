@@ -13,9 +13,11 @@ namespace CraneGH.Components
         public GH_OptimalDirectionField()
           : base("Optimal Direction Field", "OptField",
               "Computes Globally Optimal N-Direction Fields (1-Vector, 2-Line, 4-Cross, 6-Hex) via Keenan Crane's complex eigenvalue formulation (ACM TOG 2013).",
-              "CraneGH", "03. Vector & Direction Fields")
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("OptField");
 
@@ -109,9 +111,11 @@ namespace CraneGH.Components
         public GH_MeshFieldStreamlines()
           : base("Mesh Field Streamlines", "Streamlines",
               "Integrates smooth streamline curves across a mesh following any per-vertex tangent vector field.",
-              "CraneGH", "03. Vector & Direction Fields")
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("Streamlines");
 
@@ -192,9 +196,9 @@ namespace CraneGH.Components
     public class GH_StripePatterns : GH_Component
     {
         public GH_StripePatterns()
-          : base("Field Stripe Patterns", "Stripes",
-              "Computes equidistant stripe curves separated by exact physical Distance D aligned to a direction field, with automatic topological bifurcations (Knöppel, Crane et al., ACM TOG 2015).",
-              "CraneGH", "04. Stripes & Conformal")
+          : base("Vector Field Stripes", "Stripes",
+              "Generates equidistant stripe curves separated by Distance D from a Vector Field V, with control over whether stripe ends touch (default = False).",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
@@ -203,17 +207,18 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddVectorParameter("Direction Field", "V", "Optional tangent direction vector per vertex (leave empty for automatic smoothest field)", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Distance", "D", "Target physical distance (spacing in Rhino units) between equidistant stripe curves", GH_ParamAccess.item, 0.0);
+            pManager.AddVectorParameter("Vector Field", "V", "Tangent direction vector per vertex or face (leave empty for automatic principal curvature field)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Distance", "D", "Target physical spacing distance (in Rhino units) between stripe curves", GH_ParamAccess.item, 0.0);
+            pManager.AddBooleanParameter("Touch Ends", "T", "False (default) = stripe ends stay separated at bifurcations/loops; True = stripe ends touch and connect", GH_ParamAccess.item, false);
             pManager[1].Optional = true;
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Equidistant Curves", "C", "Extracted equidistant stripe polylines separated by Distance D", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Stripe Curves", "C", "Extracted equidistant stripe curves", GH_ParamAccess.list);
             pManager.AddNumberParameter("Stripe Wave", "S", "Cosine stripe wave value in [-1, 1] per vertex", GH_ParamAccess.list);
             pManager.AddPointParameter("Branch Points", "B", "Locations of topological stripe bifurcations (Y-junctions)", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Striped Mesh", "CM", "Mesh vertex-colored with the zebra stripe pattern", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Striped Mesh", "CM", "Mesh vertex-colored with the stripe pattern", GH_ParamAccess.item);
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
@@ -221,13 +226,15 @@ namespace CraneGH.Components
             Mesh m = null;
             var vecs = new List<Vector3d>();
             double dist = 0.0;
+            bool touchEnds = false;
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetDataList(1, vecs);
             DA.GetData(2, ref dist);
+            DA.GetData(3, ref touchEnds);
 
             var ddg = new DdgMesh(m);
             double[] wave = DdgAlgorithms.ComputeStripePatternsByDistance(
-                ddg, vecs, null, dist, 2, out List<Polyline> stripeCurves, out List<Point3d> branches);
+                ddg, vecs, null, dist, 2, out List<Polyline> stripeCurves, out List<Point3d> branches, null, touchEnds);
             Mesh colored = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, wave, true);
 
             DA.SetDataList(0, stripeCurves);
@@ -244,11 +251,11 @@ namespace CraneGH.Components
         public GH_CurveGuidedStripes()
           : base("Curve Guided Stripes", "CrvStripes",
               "Generates equidistant stripe curves separated by exact physical Distance D that follow and align with input Guide Curves on the mesh.",
-              "CraneGH", "04. Stripes & Conformal")
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.secondary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("CrvStripes");
 
@@ -297,9 +304,9 @@ namespace CraneGH.Components
         private readonly List<Point3d> _singularities = new List<Point3d>();
 
         public GH_PrincipalCrossField()
-          : base("Cross Field (U/V & X-Cross)", "CrossField",
-              "Builds a 4-way symmetric Cross Field (U and V orthogonal tangent directions + lightweight X-Cross segments) from an Input Vector Field V (or from Principal Curvatures if V is empty).",
-              "CraneGH", "03. Vector & Direction Fields")
+          : base("Cross Field (U & V)", "CrossField",
+              "Builds orthogonal U and V tangent vector fields and lightweight X-Cross segments from an Input Vector Field V (or from Principal Curvatures if V is empty).",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
@@ -394,9 +401,11 @@ namespace CraneGH.Components
         public GH_CrossFieldQuadGrid()
           : base("Cross Field Quad Grid", "CrossQuads",
               "Generates two orthogonal sets of equidistant curves (U and V) separated by exact Distance D aligned to a Cross Field.",
-              "CraneGH", "04. Stripes & Conformal")
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("CrossQuads");
 
@@ -459,9 +468,9 @@ namespace CraneGH.Components
         private readonly List<Line> _previewArrows = new List<Line>();
 
         public GH_VectorFieldSmooth()
-          : base("Vector & Gradient Multi-Smooth", "SmoothField",
-              "Smooths and redistributes any tangent Vector Field or Scalar Gradient on a mesh using 4 mathematical methods: (0) Connection Laplacian Vector Heat, (1) Helmholtz-Hodge Eikonal Gradient Redistribution, (2) Crease-Anisotropic Feature Smooth, or (3) 4-RoSy Symmetric Frame.",
-              "CraneGH", "03. Vector & Direction Fields")
+          : base("Smooth Vector Field", "SmoothField",
+              "Smooths and redistributes any tangent Vector Field or Scalar Gradient on a mesh (0=Connection Laplacian, 1=Helmholtz-Hodge Redistribution, 2=Crease-Anisotropic, 3=4-RoSy).",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
@@ -545,9 +554,9 @@ namespace CraneGH.Components
         private int _displayMode = 0;
 
         public GH_MeshFieldDisplay()
-          : base("Vector, X-Cross & Gradient Inspector", "VecView",
-              "Visualizes lightweight Vector Line Segments (0), 4-RoSy X-Cross Fields (1), Geodesic Gradients + Wavefront Ticks (2), and Covariant Vector Gradients / Divergence / Curl (3) on a mesh using fast batched GPU segments.",
-              "CraneGH", "03. Vector & Direction Fields")
+          : base("Vector Field Visualizer", "VecView",
+              "Visualizes any Vector Field (0), X-Cross Field (1), Scalar Gradient (2), or Vector Gradient/Div/Curl (3) on a mesh using fast batched GPU line segments.",
+              "CraneGH", "01. Visualizers")
         {
         }
 
@@ -667,13 +676,13 @@ namespace CraneGH.Components
         private Mesh _relMesh;
 
         public GH_ScalarWeightedVectorFlow()
-          : base("Scalar-Weighted Vector Flow & Geodesic", "GuidedFlow",
-              "Combines a Vector Field (V) with a Scalar Relevance Field W in [0..1] (0 = avoid / do not pass, 1 = high importance / attract). Pushes trajectories toward 1-zones via +grad(W) while traveling along V, and extracts Fabrication Toolpaths & Planes.",
-              "CraneGH", "03. Vector & Direction Fields")
+          : base("Scalar-Guided Vector Flow", "GuidedFlow",
+              "Combines a Vector Field (V) with a Relevance Scalar W in [0..1] (0 = avoid, 1 = attract) to trace guided flow paths and A-to-B geodesics.",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("FlowLines");
+        protected override Bitmap Icon => CraneIcons.GetIcon("GuidedFlow");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
@@ -774,9 +783,9 @@ namespace CraneGH.Components
         private readonly List<Color> _arrowColors = new List<Color>();
 
         public GH_VectorFamilyDiscretizer()
-          : base("Vector Family Discretizer", "VecFamily",
-              "Discretizes a continuous tangent vector field on a mesh into a finite Family of Vectors (either user-supplied reference vectors or K clustered directions), grouping faces by discrete vector family and displaying lightweight segments.",
-              "CraneGH", "03. Vector & Direction Fields")
+          : base("Vector Family Segmenter", "VecFamily",
+              "Quantizes a continuous Vector Field into K discrete vector directions and segments the mesh into pieces sharing the same vector family.",
+              "CraneGH", "04. Segmentation & Fabrication")
         {
         }
 
@@ -875,9 +884,11 @@ namespace CraneGH.Components
         public GH_SpiralIsoConnector()
           : base("Smooth Spiral Iso-Curve", "SpiralIso",
               "Dedicated component that extracts a smooth, non-polygonal Degree-3 NURBS Helical Spiral Iso-Curve (or Fermat Spiral) on a mesh from any Scalar Field, Smoothed Scalar Mesh, or Scalar Gradient.",
-              "CraneGH", "04. Stripes & Conformal")
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
+
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("Stripes");
 
@@ -1005,22 +1016,21 @@ namespace CraneGH.Components
         private Mesh _stripedMesh;
 
         public GH_VariableDensityStripes()
-          : base("Scalar & Gradient Variable Stripes", "VarStripes",
-              "Generates variable-spacing stripes where high Scalar / high Scalar Gradient zones have MORE stripes (small spacing) and low Scalar zones have FEWER stripes (large spacing).",
-              "CraneGH", "04. Stripes & Conformal")
+          : base("Scalar & Gradient Stripes", "VarStripes",
+              "Generates variable-spacing stripes from a Scalar Field or Scalar Gradient (high values = MORE stripes / closer spacing, low values = FEWER stripes / wider spacing), with control over whether stripe ends touch (default = False).",
+              "CraneGH", "03. Vector Fields & Stripes")
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("Stripes");
+        protected override Bitmap Icon => CraneIcons.GetIcon("VarStripes");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxS = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar Field (double) or Scalar Gradient Vectors (Vector3d): high values = MORE stripes (closer together), low values = FEWER stripes (wider apart)", GH_ParamAccess.list);
+            int idxS = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar Field (double) or Scalar Gradient Vectors (Vector3d): high values = MORE stripes, low values = FEWER stripes", GH_ParamAccess.list);
             pManager[idxS].Optional = true;
-            int idxV = pManager.AddVectorParameter("Direction Field", "V", "Optional tangent direction vectors for stripe orientation (if empty, aligns with iso-contours of S)", GH_ParamAccess.list);
-            pManager[idxV].Optional = true;
             pManager.AddNumberParameter("Base Spacing", "D", "Base physical spacing distance (in Rhino units) between stripes (0 = automatic)", GH_ParamAccess.item, 0.0);
+            pManager.AddBooleanParameter("Touch Ends", "T", "False (default) = stripe ends do NOT touch; True = stripe ends touch / close", GH_ParamAccess.item, false);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -1039,13 +1049,13 @@ namespace CraneGH.Components
 
             Mesh m = null;
             var rawS = new List<object>();
-            var inVecs = new List<Vector3d>();
             double baseDist = 0.0;
+            bool touchEnds = false;
 
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetDataList(1, rawS);
-            DA.GetDataList(2, inVecs);
-            DA.GetData(3, ref baseDist);
+            DA.GetData(2, ref baseDist);
+            DA.GetData(3, ref touchEnds);
 
             var ddg = new DdgMesh(m);
             int nV = ddg.VertexCount;
@@ -1082,7 +1092,6 @@ namespace CraneGH.Components
                 double uSpan = Math.Max(1e-12, uMax - uMin);
                 double gSpan = Math.Max(1e-12, gMax - gMin);
 
-                // Combine normalized scalar value and local gradient slope so BOTH high scalar values and steep gradient zones pack more stripes!
                 for (int i = 0; i < nV; i++)
                 {
                     double tU = (uPotential[i] - uMin) / uSpan;
@@ -1105,7 +1114,6 @@ namespace CraneGH.Components
 
                 if (gMax - gMin > 1e-4 * gMax)
                 {
-                    // Gradient vectors have varying magnitudes -> use ||grad u|| + integrated potential
                     double uMin = double.MaxValue, uMax = double.MinValue;
                     for (int i = 0; i < nV; i++)
                     {
@@ -1123,81 +1131,36 @@ namespace CraneGH.Components
                 }
                 else
                 {
-                    // Unit vectors -> use integrated scalar potential uPotential
                     for (int i = 0; i < nV; i++) densityField[i] = uPotential[i];
                 }
             }
             else
             {
-                // Default: heat distance from vertex 0
                 uPotential = DdgAlgorithms.ComputeHeatDistance(ddg, new int[] { 0 }, 1.0, out _, out _);
                 for (int i = 0; i < nV; i++) densityField[i] = uPotential[i];
             }
 
-            Vector3d[] vDir;
-            var branches = new List<Point3d>();
-            double[] wave = new double[nV];
-
-            if (inVecs.Count > 0)
+            DdgAlgorithms.ComputeWalkOnMesh(ddg, uPotential, null, 0.0, 2, 0, out Vector3d[] gradU, out _, out _);
+            var vDir = new Vector3d[nV];
+            for (int i = 0; i < nV; i++)
             {
-                // User supplied explicit direction field V -> run variable-wavenumber Knöppel stripes with Y-bifurcations!
-                vDir = ddg.MapVectorInputToVertices(inVecs);
-                wave = DdgAlgorithms.ComputeStripePatternsByDistance(
-                    ddg,
-                    vDir,
-                    null,
-                    baseDist,
-                    2,
-                    out List<Polyline> crvs,
-                    out branches,
-                    densityField);
-                _stripeCurves.AddRange(crvs);
-            }
-            else
-            {
-                // No separate V provided -> orient stripes along iso-contours of uPotential AND warp spacing
-                // so high scalar / high gradient zones have MANY closely-packed stripes and low zones have FEW stripes!
-                DdgAlgorithms.ComputeWalkOnMesh(ddg, uPotential, null, 0.0, 2, 0, out Vector3d[] gradU, out _, out _);
-                vDir = new Vector3d[nV];
-                for (int i = 0; i < nV; i++)
-                {
-                    Vector3d t = Vector3d.CrossProduct(ddg.VertexNormals[i], gradU[i]);
-                    vDir[i] = t.Unitize() ? t : ddg.PrincipalDir[i];
-                }
-
-                double uMin = double.MaxValue, uMax = double.MinValue;
-                for (int i = 0; i < nV; i++)
-                {
-                    if (uPotential[i] < uMin) uMin = uPotential[i];
-                    if (uPotential[i] > uMax) uMax = uPotential[i];
-                }
-                double uSpan = Math.Max(1e-12, uMax - uMin);
-
-                double spacing = baseDist > 1e-6 ? baseDist : 2.2 * ddg.MeanEdgeLength;
-                BoundingBox bb = m.GetBoundingBox(false);
-                int numStripes = Math.Max(6, Math.Min(180, (int)Math.Round(bb.Diagonal.Length / spacing)));
-
-                // Non-linear cumulative density warp Phi(t) = t^2.4:
-                // Derivative dPhi/dt = 2.4 * t^1.4 is SMALL when t is near 0 (FEW stripes, wide distance)
-                // and LARGE when t is near 1 (MANY stripes, narrow distance)!
-                double[] warpedPhase = new double[nV];
-                for (int i = 0; i < nV; i++)
-                {
-                    double t = Math.Max(0.0, Math.Min(1.0, (uPotential[i] - uMin) / uSpan));
-                    double w = Math.Pow(t, 2.35);
-                    warpedPhase[i] = w;
-                    wave[i] = Math.Cos(2.0 * Math.PI * numStripes * w);
-                }
-
-                var levels = new List<double>(numStripes);
-                for (int k = 1; k <= numStripes; k++)
-                {
-                    levels.Add(k / (double)(numStripes + 1));
-                }
-                List<Polyline> isoStripes = ddg.ExtractIsoContours(warpedPhase, levels);
-                _stripeCurves.AddRange(isoStripes);
+                Vector3d t = Vector3d.CrossProduct(ddg.VertexNormals[i], gradU[i]);
+                vDir[i] = t.Unitize() ? t : ddg.PrincipalDir[i];
             }
 
+            // Use variable-wavenumber Knöppel stripes with densityField and touchEnds control!
+            double[] wave = DdgAlgorithms.ComputeStripePatternsByDistance(
+                ddg,
+                vDir,
+                null,
+                baseDist,
+                2,
+                out List<Polyline> crvs,
+                out List<Point3d> branches,
+                densityField,
+                touchEnds);
+
+            _stripeCurves.AddRange(crvs);
             _stripedMesh = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, wave, true);
 
             double dMin = double.MaxValue, dMax = double.MinValue;
@@ -1244,5 +1207,72 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000049");
+    }
+
+    public class GH_RotateTangentVectors : GH_Component
+    {
+        private readonly List<Line> _previewLines = new List<Line>();
+
+        public GH_RotateTangentVectors()
+          : base("Rotate Tangent Vectors", "RotateVec",
+              "Rotates a Tangent Vector Field V on the mesh around each vertex normal by a uniform Angle (e.g. 90 deg) or a per-vertex Scalar Field of angles.",
+              "CraneGH", "03. Vector Fields & Stripes")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("RotateVec");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxV = pManager.AddVectorParameter("Vectors", "V", "Input tangent vector field per vertex or face (leave empty for principal curvature directions)", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
+            pManager.AddNumberParameter("Angle (Deg)", "A", "Rotation angle in degrees in the surface tangent plane (single angle like 90.0, or per-vertex scalar list)", GH_ParamAccess.list, 90.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddVectorParameter("Rotated Vectors", "VR", "Tangent vectors rotated by Angle A around each vertex normal", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Ortho Vectors", "VO", "Orthogonal tangent vectors (90 deg from VR)", GH_ParamAccess.list);
+            pManager.AddLineParameter("Preview Segments", "L", "Lightweight 3D line segments of the rotated vector field", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _previewLines.Clear();
+
+            Mesh m = null;
+            var inVecs = new List<Vector3d>();
+            var angles = new List<double>();
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetDataList(1, inVecs);
+            if (!DA.GetDataList(2, angles) || angles.Count == 0) angles.Add(90.0);
+
+            var ddg = new DdgMesh(m);
+            Vector3d[] rotVecs = DdgAlgorithms.RotateTangentVectorsOnMesh(
+                ddg,
+                inVecs.Count > 0 ? inVecs : null,
+                angles,
+                out Vector3d[] orthoVecs,
+                out List<Line> lines);
+
+            _previewLines.AddRange(lines);
+
+            DA.SetDataList(0, rotVecs);
+            DA.SetDataList(1, orthoVecs);
+            DA.SetDataList(2, lines);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _previewLines.Count == 0) return;
+
+            Color cSeg = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(255, 215, 50);
+            args.Display.DrawLines(_previewLines, cSeg, 2);
+        }
+
+        public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000050");
     }
 }
