@@ -75,16 +75,18 @@ namespace CraneGH.Core
                     case "CleanCloud": DrawCleanCloud(g); break;
                     case "MCFlow": DrawMCFlow(g); break;
 
-                    // Legacy / Hidden keys
+                    // Additional active & legacy keys
+                    case "OptField": DrawOptField(g); break;
+                    case "CrvStripes": DrawCrvStripes(g); break;
+                    case "CrossQuads": DrawCrossQuads(g); break;
+                    case "MeshSeg": DrawMeshSeg(g); break;
                     case "GradLap": DrawGradView(g); break;
                     case "Harmonic": DrawScalarView(g); break;
                     case "IsoCrvs": DrawIsoCut(g); break;
                     case "LogMap": DrawCrossView(g); break;
                     case "DecalMap": DrawCrossView(g); break;
-                    case "OptField": DrawCrossField(g); break;
                     case "TrivConn": DrawCrossView(g); break;
                     case "Streamlines": DrawGuidedFlow(g); break;
-                    case "CrvStripes": DrawVarStripes(g); break;
                     case "SpinXForm": DrawCurvatures(g); break;
                     case "BFF": DrawScalarView(g); break;
                     case "Auxetics": DrawCrossField(g); break;
@@ -93,8 +95,6 @@ namespace CraneGH.Core
                     case "SubgridTet": DrawIsoBoxSub(g); break;
                     case "SharpEdges": DrawKMeansSeg(g); break;
                     case "FeatHeat": DrawHeatDist(g); break;
-                    case "MeshSeg": DrawKMeansSeg(g); break;
-                    case "CrossQuads": DrawCrossField(g); break;
                     case "VarCuts": DrawCurvSeg(g); break;
                     case "GeoTSP": DrawMillingPaths(g); break;
                     default: DrawHeatDist(g); break;
@@ -624,6 +624,81 @@ namespace CraneGH.Core
                 g.DrawLines(p1, jagged);
             using (var p2 = new Pen(Color.FromArgb(80, 230, 190), 2.3f))
                 g.DrawArc(p2, 4, 8, 16, 12, 190, 160);
+        }
+
+        // OptField: Torus Optimal Direction Field + Singularities
+        private static void DrawOptField(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(25, 32, 48), Color.FromArgb(45, 62, 88));
+            using (var p1 = new Pen(Color.FromArgb(80, 225, 255), 1.4f))
+            {
+                g.DrawEllipse(p1, 4f, 4f, 16f, 16f);
+                g.DrawEllipse(p1, 7.5f, 7.5f, 9f, 9f);
+            }
+            using (var p2 = new Pen(Color.FromArgb(165, 255, 120), 1.2f))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    double a = i * Math.PI / 4.0;
+                    float x1 = 12 + (float)(4.5 * Math.Cos(a)), y1 = 12 + (float)(4.5 * Math.Sin(a));
+                    float x2 = 12 + (float)(9.5 * Math.Cos(a)), y2 = 12 + (float)(9.5 * Math.Sin(a));
+                    g.DrawLine(p2, x1, y1, x2, y2);
+                }
+            }
+            g.FillEllipse(Brushes.Red, 2.0f, 10f, 3.6f, 3.6f);
+            g.FillEllipse(Brushes.Red, 18.4f, 10f, 3.6f, 3.6f);
+        }
+
+        // CrvStripes / CrvField: Guide Curve (Magenta) + Vector Segments & Stripes
+        private static void DrawCrvStripes(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(245, 245, 248), Color.FromArgb(215, 218, 226));
+            using (var guidePen = new Pen(Color.FromArgb(230, 35, 90), 2.5f))
+            {
+                g.DrawBezier(guidePen, new PointF(5, 3), new PointF(8, 9), new PointF(4, 15), new PointF(7, 21));
+            }
+            using (var stripePen = new Pen(Color.FromArgb(25, 30, 42), 1.8f))
+            {
+                g.DrawBezier(stripePen, new PointF(10.5f, 3), new PointF(13.5f, 9), new PointF(9.5f, 15), new PointF(12.5f, 21));
+                g.DrawBezier(stripePen, new PointF(15.5f, 3), new PointF(18.5f, 9), new PointF(14.5f, 15), new PointF(17.5f, 21));
+            }
+        }
+
+        // CrossQuads: Orthogonal U (Blue) and V (Red) Quad Stripes
+        private static void DrawCrossQuads(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(240, 244, 250), Color.FromArgb(200, 212, 230));
+            using (var pU = new Pen(Color.FromArgb(0, 115, 220), 1.5f))
+            using (var pV = new Pen(Color.FromArgb(225, 55, 45), 1.5f))
+            {
+                for (int i = -1; i <= 1; i++)
+                {
+                    float off = i * 4.5f;
+                    g.DrawBezier(pU, new PointF(3, 12 + off), new PointF(9, 9 + off), new PointF(15, 15 + off), new PointF(21, 12 + off));
+                    g.DrawBezier(pV, new PointF(12 + off, 3), new PointF(9 + off, 9), new PointF(15 + off, 15), new PointF(12 + off, 21));
+                }
+            }
+        }
+
+        // MeshSeg / GeoSeam: Segmented patches with glowing cyan Geodesic Costura Seam
+        private static void DrawMeshSeg(Graphics g)
+        {
+            using (var b1 = new SolidBrush(Color.FromArgb(230, 75, 53)))
+                g.FillPie(b1, 1.5f, 1.5f, 21f, 21f, 180, 110);
+            using (var b2 = new SolidBrush(Color.FromArgb(77, 187, 213)))
+                g.FillPie(b2, 1.5f, 1.5f, 21f, 21f, 290, 110);
+            using (var b3 = new SolidBrush(Color.FromArgb(0, 160, 135)))
+                g.FillPie(b3, 1.5f, 1.5f, 21f, 21f, 40, 140);
+
+            using (var seamPen = new Pen(Color.FromArgb(0, 255, 215), 2.3f))
+            {
+                g.DrawLine(seamPen, 12, 12, 2, 12);
+                g.DrawLine(seamPen, 12, 12, 16, 2.5f);
+                g.DrawLine(seamPen, 12, 12, 20, 19);
+            }
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
+            g.FillEllipse(Brushes.Gold, 10.2f, 10.2f, 3.6f, 3.6f);
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)

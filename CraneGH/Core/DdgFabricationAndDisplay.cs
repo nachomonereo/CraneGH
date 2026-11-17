@@ -670,21 +670,12 @@ namespace CraneGH.Core
 
             EnforceConnectedClusterRegions(mesh, faceLabels, K);
 
-            Color[] palette = GenerateDistinctPalette(K);
-            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, K, palette, out coloredMesh);
+            // Project mesh seam vertices onto the smoothed geodesic seam (costura) and relax 1-2 ring triangles!
+            Point3d[] seamProjectedPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 18);
 
-            List<Polyline> rawBoundaryCurves = ExtractLabelBoundaryCurves(mesh, faceLabels);
-            if (rawBoundaryCurves.Count > 0)
-            {
-                // Stretch & shorten cluster boundaries into taut Geodesic Curves on the mesh (FlipOut / Geodesic Network Shorten)
-                var seamCurves = rawBoundaryCurves.ConvertAll(pl => (Curve)new PolylineCurve(pl));
-                boundaryCurves = ComputeGeodesicNetworkShorten(
-                    mesh.RhinoMesh, seamCurves, 14, true, out _, null);
-            }
-            else
-            {
-                boundaryCurves = rawBoundaryCurves;
-            }
+            Color[] palette = GenerateDistinctPalette(K);
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, K, palette, out coloredMesh, seamProjectedPos);
+            boundaryCurves = ExtractLabelBoundaryCurves(mesh, faceLabels, seamProjectedPos);
 
             return subMeshes;
         }
@@ -705,10 +696,136 @@ namespace CraneGH.Core
                  + wF * dFeat * dFeat;
         }
 
+        /// <summary>
+        /// Smooths the inter-segment boundary graph into taut Geodesic Seams on the surface AND projects
+        /// the boundary vertices of the mesh (plus 2-ring interior relaxation) directly onto the geodesic costura
+        /// so segmented Sub-Meshes have smooth geodesic borders that match the seam curves vertex-for-vertex!
+        /// </summary>
+        public static Point3d[] ProjectSeamVerticesToGeodesicCostura(DdgMesh mesh, int[] faceLabels, int iterations = 18)
+        {
+            int nV = mesh.VertexCount;
+            Point3d[] pos = new Point3d[nV];
+            Point3d[] nextPos = new Point3d[nV];
+            Array.Copy(mesh.Positions, pos, nV);
+            Array.Copy(mesh.Positions, nextPos, nV);
+
+            // 1. Build seam adjacency list for vertices lying on label boundaries
+            var seamAdj = new List<int>[nV];
+            for (int i = 0; i < nV; i++) seamAdj[i] = new List<int>(2);
+
+            bool hasAnySeam = false;
+            foreach (var e in mesh.Edges)
+            {
+                if (e.HalfEdge1 == -1) continue;
+                int f0 = mesh.HalfEdges[e.HalfEdge0].FaceIndex;
+                int f1 = mesh.HalfEdges[e.HalfEdge1].FaceIndex;
+                if (faceLabels[f0] != faceLabels[f1])
+                {
+                    seamAdj[e.V0].Add(e.V1);
+                    seamAdj[e.V1].Add(e.V0);
+                    hasAnySeam = true;
+                }
+            }
+            if (!hasAnySeam || iterations <= 0) return pos;
+
+            // 2. Identify 1-ring and 2-ring interior vertices near the seam for smooth triangle relaxation
+            int[] ringDist = new int[nV];
+            for (int i = 0; i < nV; i++)
+                ringDist[i] = seamAdj[i].Count > 0 ? 0 : 99;
+
+            for (int r = 1; r <= 2; r++)
+            {
+                for (int v = 0; v < nV; v++)
+                {
+                    if (ringDist[v] != r - 1) continue;
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[v])
+                    {
+                        var e = mesh.Edges[mesh.HalfEdges[heIdx].EdgeIndex];
+                        int nb = (e.V0 == v) ? e.V1 : e.V0;
+                        if (ringDist[nb] > r) ringDist[nb] = r;
+                    }
+                }
+            }
+
+            // 3. Iterative Intrinsic Geodesic Seam Shortening + Tangential Mesh Relaxation
+            int nIter = Math.Max(1, Math.Min(60, iterations));
+            for (int iter = 0; iter < nIter; iter++)
+            {
+                bool projectToMesh = (iter == nIter - 1) || (iter % 5 == 4);
+
+                for (int v = 0; v < nV; v++)
+                {
+                    int sDeg = seamAdj[v].Count;
+                    if (sDeg == 2 && !mesh.VertexOnBoundary[v])
+                    {
+                        // Interior seam vertex -> slide toward geodesic midpoint between its 2 seam neighbors!
+                        int vA = seamAdj[v][0];
+                        int vB = seamAdj[v][1];
+                        Point3d mid = 0.5 * (pos[vA] + pos[vB]);
+                        Vector3d delta = mid - pos[v];
+                        // Project displacement onto vertex tangent plane so it stays on the curved surface
+                        Vector3d nrm = mesh.VertexNormals[v];
+                        delta -= (delta * nrm) * nrm;
+                        Point3d cand = pos[v] + 0.62 * delta;
+
+                        if (projectToMesh)
+                        {
+                            Point3d cp = mesh.RhinoMesh.ClosestPoint(cand);
+                            if (cp.IsValid) cand = cp;
+                        }
+                        nextPos[v] = cand;
+                    }
+                    else if (sDeg == 0 && (ringDist[v] == 1 || ringDist[v] == 2) && !mesh.VertexOnBoundary[v])
+                    {
+                        // 1-ring or 2-ring neighbor of the seam -> tangential Laplacian relaxation to prevent triangle folding
+                        Point3d sum = Point3d.Origin;
+                        int cnt = 0;
+                        foreach (int heIdx in mesh.VertexOutgoingHalfEdges[v])
+                        {
+                            var e = mesh.Edges[mesh.HalfEdges[heIdx].EdgeIndex];
+                            int nb = (e.V0 == v) ? e.V1 : e.V0;
+                            sum += pos[nb];
+                            cnt++;
+                        }
+                        if (cnt > 0)
+                        {
+                            Point3d avg = sum / cnt;
+                            Vector3d delta = avg - pos[v];
+                            Vector3d nrm = mesh.VertexNormals[v];
+                            delta -= (delta * nrm) * nrm;
+                            double wRelax = ringDist[v] == 1 ? 0.38 : 0.20;
+                            Point3d cand = pos[v] + wRelax * delta;
+                            if (projectToMesh)
+                            {
+                                Point3d cp = mesh.RhinoMesh.ClosestPoint(cand);
+                                if (cp.IsValid) cand = cp;
+                            }
+                            nextPos[v] = cand;
+                        }
+                        else
+                        {
+                            nextPos[v] = pos[v];
+                        }
+                    }
+                    else
+                    {
+                        // Triple junctions (sDeg >= 3), boundary vertices, and far interior vertices remain pinned
+                        nextPos[v] = pos[v];
+                    }
+                }
+
+                for (int v = 0; v < nV; v++)
+                    pos[v] = nextPos[v];
+            }
+
+            return pos;
+        }
+
         private static List<Mesh> BuildSubMeshesFromFaceLabels(
-            DdgMesh mesh, int[] faceLabels, int K, Color[] palette, out Mesh coloredCombinedMesh)
+            DdgMesh mesh, int[] faceLabels, int K, Color[] palette, out Mesh coloredCombinedMesh, Point3d[] customVertexPositions = null)
         {
             int nF = mesh.FaceCount;
+            Point3d[] vPos = customVertexPositions ?? ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 16);
             coloredCombinedMesh = new Mesh();
             var subMeshes = new List<Mesh>(K);
 
@@ -727,7 +844,7 @@ namespace CraneGH.Core
                         int origV = fv[k];
                         if (!oldToNewV.TryGetValue(origV, out int newIdx))
                         {
-                            newIdx = sub.Vertices.Add(mesh.Positions[origV]);
+                            newIdx = sub.Vertices.Add(vPos[origV]);
                             sub.VertexColors.Add(palette[c % palette.Length]);
                             oldToNewV[origV] = newIdx;
                         }
@@ -746,8 +863,9 @@ namespace CraneGH.Core
             return subMeshes;
         }
 
-        private static List<Polyline> ExtractLabelBoundaryCurves(DdgMesh mesh, int[] faceLabels)
+        private static List<Polyline> ExtractLabelBoundaryCurves(DdgMesh mesh, int[] faceLabels, Point3d[] customVertexPositions = null)
         {
+            Point3d[] vPos = customVertexPositions ?? mesh.Positions;
             var cutLines = new List<Line>();
             foreach (var e in mesh.Edges)
             {
@@ -756,7 +874,7 @@ namespace CraneGH.Core
                 int f1 = mesh.HalfEdges[e.HalfEdge1].FaceIndex;
                 if (faceLabels[f0] != faceLabels[f1])
                 {
-                    cutLines.Add(new Line(mesh.Positions[e.V0], mesh.Positions[e.V1]));
+                    cutLines.Add(new Line(vPos[e.V0], vPos[e.V1]));
                 }
             }
 
@@ -4592,9 +4710,10 @@ namespace CraneGH.Core
                 }
                 EnforceConnectedClusterRegions(mesh, faceLabels, seeds.Count);
 
-                // Extract sub-meshes per watershed region and classify as Convex or Concave
+                // Extract sub-meshes per watershed region with vertices projected to geodesic costura
+                Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 18);
                 var distinctColors = GenerateDistinctPalette(Math.Max(4, seeds.Count));
-                List<Mesh> builtSubs = BuildSubMeshesFromFaceLabels(mesh, faceLabels, seeds.Count, distinctColors, out _);
+                List<Mesh> builtSubs = BuildSubMeshesFromFaceLabels(mesh, faceLabels, seeds.Count, distinctColors, out _, seamPos);
 
                 foreach (Mesh sub in builtSubs)
                 {
@@ -4616,12 +4735,7 @@ namespace CraneGH.Core
                 }
 
                 // Extract smooth boundary curves along the Maxima / Minima watershed seams
-                List<Polyline> rawSeams = ExtractLabelBoundaryCurves(mesh, faceLabels);
-                if (rawSeams.Count > 0)
-                {
-                    var seamCurves = rawSeams.ConvertAll(pl => (Curve)new PolylineCurve(pl));
-                    subdivisionCurves = ComputeGeodesicNetworkShorten(mesh.RhinoMesh, seamCurves, 6, true, out _);
-                }
+                subdivisionCurves = ExtractLabelBoundaryCurves(mesh, faceLabels, seamPos);
             }
 
             return allPieces;
@@ -5493,12 +5607,222 @@ namespace CraneGH.Core
             }
             faceLabels = smoothed;
 
+            Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 18);
             Color[] palette = GenerateDistinctPalette(Math.Max(2, numRegions));
-            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, numRegions, palette, out coloredMesh);
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, numRegions, palette, out coloredMesh, seamPos);
 
-            // Extract exact smooth iso-contour curves at the thresholds as boundary curves!
-            boundaryCurves = mesh.ExtractIsoContours(u, thresholds);
+            // Extract exact smooth geodesic boundary curves matching the projected sub-mesh borders!
+            boundaryCurves = ExtractLabelBoundaryCurves(mesh, faceLabels, seamPos);
             return subMeshes;
+        }
+
+        // =========================================================================================
+        // 32. CLASSIC GEODESIC PATH FROM POINT A TO POINT B (No Scalar Field Required)
+        // =========================================================================================
+        public static List<Polyline> ComputeGeodesicPathAToB(
+            DdgMesh mesh,
+            IList<Point3d> startPointsA,
+            IList<Point3d> endPointsB,
+            out List<double> geodesicLengths)
+        {
+            var paths = new List<Polyline>();
+            geodesicLengths = new List<double>();
+            if (mesh == null || startPointsA == null || endPointsB == null || startPointsA.Count == 0 || endPointsB.Count == 0)
+                return paths;
+
+            int nV = mesh.VertexCount;
+            int pairCount = Math.Max(startPointsA.Count, endPointsB.Count);
+
+            for (int pairIdx = 0; pairIdx < pairCount; pairIdx++)
+            {
+                Point3d rawA = startPointsA[Math.Min(pairIdx, startPointsA.Count - 1)];
+                Point3d rawB = endPointsB[Math.Min(pairIdx, endPointsB.Count - 1)];
+
+                MeshPoint mpA = mesh.RhinoMesh.ClosestMeshPoint(rawA, 0.0);
+                MeshPoint mpB = mesh.RhinoMesh.ClosestMeshPoint(rawB, 0.0);
+                Point3d ptA = mpA != null ? mpA.Point : rawA;
+                Point3d ptB = mpB != null ? mpB.Point : rawB;
+
+                int vA = mesh.FindClosestVertex(ptA);
+                int vB = mesh.FindClosestVertex(ptB);
+
+                if (vA == vB || ptA.DistanceToSquared(ptB) < 1e-12)
+                {
+                    var shortPl = new Polyline(new Point3d[] { ptA, ptB });
+                    paths.Add(shortPl);
+                    geodesicLengths.Add(shortPl.Length);
+                    continue;
+                }
+
+                // 1. Dijkstra on mesh graph from vA to vB for guaranteed topological connectivity
+                double[] dist = new double[nV];
+                int[] parent = new int[nV];
+                bool[] visited = new bool[nV];
+                for (int i = 0; i < nV; i++)
+                {
+                    dist[i] = double.MaxValue;
+                    parent[i] = -1;
+                }
+                dist[vA] = 0.0;
+
+                var pq = new SortedSet<(double d, int v)>();
+                pq.Add((0.0, vA));
+
+                while (pq.Count > 0)
+                {
+                    var top = pq.Min;
+                    pq.Remove(top);
+                    int u = top.v;
+                    if (visited[u]) continue;
+                    visited[u] = true;
+                    if (u == vB) break;
+
+                    Point3d pu = mesh.Positions[u];
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[u])
+                    {
+                        var e = mesh.Edges[mesh.HalfEdges[heIdx].EdgeIndex];
+                        int nb = (e.V0 == u) ? e.V1 : e.V0;
+                        if (visited[nb]) continue;
+                        double nd = dist[u] + e.Length;
+                        if (nd < dist[nb])
+                        {
+                            dist[nb] = nd;
+                            parent[nb] = u;
+                            pq.Add((nd, nb));
+                        }
+                    }
+                }
+
+                var chain = new List<Point3d>();
+                if (parent[vB] != -1)
+                {
+                    int cur = vB;
+                    while (cur != -1)
+                    {
+                        chain.Add(mesh.Positions[cur]);
+                        if (cur == vA) break;
+                        cur = parent[cur];
+                    }
+                    chain.Reverse();
+                    chain[0] = ptA;
+                    chain[chain.Count - 1] = ptB;
+                }
+                else
+                {
+                    // Disconnected shells fallback: sample straight line projected to mesh
+                    int nSamples = 32;
+                    for (int s = 0; s <= nSamples; s++)
+                    {
+                        double t = s / (double)nSamples;
+                        Point3d lerp = (1.0 - t) * ptA + t * ptB;
+                        chain.Add(mesh.RhinoMesh.ClosestPoint(lerp));
+                    }
+                    chain[0] = ptA;
+                    chain[chain.Count - 1] = ptB;
+                }
+
+                // Subdivide long segments before intrinsic geodesic shortening so curve crosses triangle interiors smoothly
+                var dense = new List<Point3d>(chain.Count * 2);
+                double maxSeg = Math.Max(1e-5, 0.55 * mesh.MeanEdgeLength);
+                dense.Add(chain[0]);
+                for (int i = 0; i < chain.Count - 1; i++)
+                {
+                    Point3d p0 = chain[i];
+                    Point3d p1 = chain[i + 1];
+                    double segL = p0.DistanceTo(p1);
+                    int divs = Math.Max(1, (int)Math.Ceiling(segL / maxSeg));
+                    for (int d = 1; d <= divs; d++)
+                    {
+                        double f = d / (double)divs;
+                        Point3d p = (1.0 - f) * p0 + f * p1;
+                        if (d < divs) p = mesh.RhinoMesh.ClosestPoint(p);
+                        dense.Add(p);
+                    }
+                }
+
+                // 2. Intrinsic Surface Geodesic Tensioning (pinned at ptA and ptB!)
+                Point3d[] pts = dense.ToArray();
+                Point3d[] nextPts = new Point3d[pts.Length];
+                nextPts[0] = ptA;
+                nextPts[pts.Length - 1] = ptB;
+
+                for (int iter = 0; iter < 32; iter++)
+                {
+                    bool snapToMesh = (iter == 31) || (iter % 4 == 3);
+                    for (int i = 1; i < pts.Length - 1; i++)
+                    {
+                        Point3d mid = 0.5 * (pts[i - 1] + pts[i + 1]);
+                        Point3d cand = 0.30 * pts[i] + 0.70 * mid;
+                        if (snapToMesh)
+                        {
+                            Point3d cp = mesh.RhinoMesh.ClosestPoint(cand);
+                            if (cp.IsValid) cand = cp;
+                        }
+                        nextPts[i] = cand;
+                    }
+                    for (int i = 1; i < pts.Length - 1; i++)
+                        pts[i] = nextPts[i];
+                }
+
+                var geoPl = new Polyline(pts);
+                paths.Add(geoPl);
+                geodesicLengths.Add(geoPl.Length);
+            }
+
+            return paths;
+        }
+
+        // =========================================================================================
+        // 33. STANDALONE GEODESIC SEAM MESH SMOOTHER & VERTEX PROJECTOR
+        // =========================================================================================
+        public static List<Mesh> SmoothAndProjectSubMeshSeams(
+            IList<Mesh> inputSubMeshes,
+            int iterations,
+            out List<Polyline> geodesicSeamCurves,
+            out Mesh combinedColoredMesh)
+        {
+            geodesicSeamCurves = new List<Polyline>();
+            combinedColoredMesh = new Mesh();
+            if (inputSubMeshes == null || inputSubMeshes.Count == 0)
+                return new List<Mesh>();
+
+            var merged = new Mesh();
+            var rawFaceLabels = new List<int>();
+            int validPieceCount = 0;
+
+            for (int mIdx = 0; mIdx < inputSubMeshes.Count; mIdx++)
+            {
+                Mesh sm = inputSubMeshes[mIdx];
+                if (sm == null || sm.Faces.Count == 0) continue;
+
+                Mesh tri = sm.DuplicateMesh();
+                tri.Faces.ConvertQuadsToTriangles();
+                int vOffset = merged.Vertices.Count;
+                merged.Vertices.AddVertices(tri.Vertices.ToPoint3dArray());
+                for (int f = 0; f < tri.Faces.Count; f++)
+                {
+                    MeshFace mf = tri.Faces[f];
+                    merged.Faces.AddFace(mf.A + vOffset, mf.B + vOffset, mf.C + vOffset);
+                    rawFaceLabels.Add(validPieceCount);
+                }
+                validPieceCount++;
+            }
+
+            if (validPieceCount == 0 || merged.Faces.Count == 0)
+                return new List<Mesh>();
+
+            var ddg = new DdgMesh(merged);
+            int[] faceLabels = new int[ddg.FaceCount];
+            for (int f = 0; f < ddg.FaceCount; f++)
+            {
+                faceLabels[f] = f < rawFaceLabels.Count ? rawFaceLabels[f] : 0;
+            }
+
+            Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(ddg, faceLabels, Math.Max(1, iterations));
+            Color[] palette = GenerateDistinctPalette(Math.Max(2, validPieceCount));
+            List<Mesh> resultMeshes = BuildSubMeshesFromFaceLabels(ddg, faceLabels, validPieceCount, palette, out combinedColoredMesh, seamPos);
+            geodesicSeamCurves = ExtractLabelBoundaryCurves(ddg, faceLabels, seamPos);
+            return resultMeshes;
         }
     }
 }

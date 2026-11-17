@@ -477,4 +477,65 @@ namespace CraneGH.Components
 
         public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000053");
     }
+
+    public class GH_GeodesicSeamProjector : GH_Component
+    {
+        private readonly List<Polyline> _seams = new List<Polyline>();
+
+        public GH_GeodesicSeamProjector()
+          : base("Geodesic Seam Mesh Smooth", "GeoSeam",
+              "Projects and smooths the boundary vertices of segmented Sub-Meshes directly onto taut Geodesic Seams (costuras geodésicas) while keeping adjacent pieces watertight.",
+              "CraneGH", "04. Segmentation & Fabrication")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("MeshSeg");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented sub-mesh pieces (e.g. from KMeansSeg, ScalarSeg, VecFamily, or MultiMold)", GH_ParamAccess.list);
+            pManager.AddIntegerParameter("Iterations", "I", "Geodesic seam tensioning and vertex projection iterations (0 = raw, 15..40 = taut geodesic costura)", GH_ParamAccess.item, 22);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Geodesic Sub-Meshes", "SM", "Segmented sub-meshes with boundary vertices projected directly onto the geodesic seam", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Geodesic Seams", "BC", "Smooth geodesic seam curves matching the sub-mesh borders vertex-for-vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Combined Colored Mesh", "CM", "Combined watertight mesh colored by segment piece", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _seams.Clear();
+
+            var inMeshes = new List<Mesh>();
+            int iter = 22;
+            if (!DA.GetDataList(0, inMeshes) || inMeshes.Count == 0) return;
+            DA.GetData(1, ref iter);
+
+            List<Mesh> outSubMeshes = DdgAlgorithms.SmoothAndProjectSubMeshSeams(
+                inMeshes,
+                iter,
+                out List<Polyline> seamCurves,
+                out Mesh combinedMesh);
+
+            _seams.AddRange(seamCurves);
+
+            DA.SetDataList(0, outSubMeshes);
+            DA.SetDataList(1, seamCurves);
+            DA.SetData(2, combinedMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _seams.Count == 0) return;
+
+            Color cSeam = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 245, 200);
+            foreach (var pl in _seams)
+                args.Display.DrawPolyline(pl, cSeam, 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000055");
+    }
 }

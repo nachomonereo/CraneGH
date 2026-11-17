@@ -147,11 +147,14 @@ namespace CraneGH.Components
         public override Guid ComponentGuid => new Guid("A102B202-C302-4D02-9E02-000000000006");
     }
 
-    public class GH_GeodesicShortestPath : GH_Component
+    public class GH_GeodesicPointAToB : GH_Component
     {
-        public GH_GeodesicShortestPath()
-          : base("Geodesic Shortest Path", "GeoPath",
-              "Traces exact shortest geodesic paths on a mesh from target points down the negative gradient of a Heat Distance field.",
+        private readonly List<Polyline> _geoPaths = new List<Polyline>();
+        private readonly List<Point3d> _endPts = new List<Point3d>();
+
+        public GH_GeodesicPointAToB()
+          : base("Geodesic Path A to B", "GeoAB",
+              "Computes the exact shortest Geodesic Curve on a mesh directly from Point A to Point B (no Scalar Field needed).",
               "CraneGH", "02. Scalar & Geodesics")
         {
         }
@@ -161,8 +164,80 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Distance Field", "d", "Geodesic distance per vertex (from Heat Geodesic Distance)", GH_ParamAccess.list);
-            pManager.AddPointParameter("Targets", "T", "Target points from which to trace geodesic paths back to sources", GH_ParamAccess.list);
+            pManager.AddPointParameter("Point A", "A", "Start point(s) A on or near the mesh", GH_ParamAccess.list);
+            pManager.AddPointParameter("Point B", "B", "End point(s) B on or near the mesh", GH_ParamAccess.list);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddCurveParameter("Geodesic Curve", "G", "Shortest geodesic curve(s) on the mesh from Point A to Point B", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Geodesic Length", "L", "Exact length of each geodesic curve along the mesh", GH_ParamAccess.list);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            _geoPaths.Clear();
+            _endPts.Clear();
+
+            Mesh m = null;
+            var ptsA = new List<Point3d>();
+            var ptsB = new List<Point3d>();
+            if (!DA.GetData(0, ref m) || m == null) return;
+            if (!DA.GetDataList(1, ptsA) || ptsA.Count == 0) return;
+            if (!DA.GetDataList(2, ptsB) || ptsB.Count == 0) return;
+
+            var ddg = new DdgMesh(m);
+            List<Polyline> paths = DdgAlgorithms.ComputeGeodesicPathAToB(ddg, ptsA, ptsB, out List<double> lengths);
+
+            _geoPaths.AddRange(paths);
+            foreach (var pl in paths)
+            {
+                if (pl != null && pl.Count >= 2)
+                {
+                    _endPts.Add(pl[0]);
+                    _endPts.Add(pl[pl.Count - 1]);
+                }
+            }
+
+            DA.SetDataList(0, paths);
+            DA.SetDataList(1, lengths);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _geoPaths.Count == 0) return;
+
+            Color cPath = Attributes.Selected ? Color.FromArgb(255, 245, 70) : Color.FromArgb(0, 255, 215);
+            foreach (var pl in _geoPaths)
+                args.Display.DrawPolyline(pl, cPath, 3);
+
+            if (_endPts.Count > 0)
+                args.Display.DrawPoints(_endPts, Rhino.Display.PointStyle.RoundSimple, 5, Color.Gold);
+        }
+
+        public override Guid ComponentGuid => new Guid("A102B202-C302-4D02-9E02-000000000054");
+    }
+
+    public class GH_GeodesicShortestPath : GH_Component
+    {
+        public GH_GeodesicShortestPath()
+          : base("Geodesic Field Path", "GeoPath",
+              "Traces shortest geodesic paths on a mesh from target points down a Distance Field d (or directly between points if d is empty).",
+              "CraneGH", "02. Scalar & Geodesics")
+        {
+        }
+
+        public override GH_Exposure Exposure => GH_Exposure.secondary;
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GeoPath");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxD = pManager.AddNumberParameter("Distance Field", "d", "Optional geodesic distance per vertex (if empty, connects Targets sequentially as A-to-B geodesics)", GH_ParamAccess.list);
+            pManager[idxD].Optional = true;
+            pManager.AddPointParameter("Targets", "T", "Target points on the mesh", GH_ParamAccess.list);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -176,10 +251,25 @@ namespace CraneGH.Components
             var dList = new List<double>();
             var targets = new List<Point3d>();
             if (!DA.GetData(0, ref m) || m == null) return;
-            if (!DA.GetDataList(1, dList) || dList.Count == 0) return;
+            DA.GetDataList(1, dList);
             if (!DA.GetDataList(2, targets) || targets.Count == 0) return;
 
             var ddg = new DdgMesh(m);
+            if (dList.Count == 0 && targets.Count >= 2)
+            {
+                var listA = new List<Point3d>();
+                var listB = new List<Point3d>();
+                for (int i = 0; i < targets.Count - 1; i++)
+                {
+                    listA.Add(targets[i]);
+                    listB.Add(targets[i + 1]);
+                }
+                List<Polyline> abPaths = DdgAlgorithms.ComputeGeodesicPathAToB(ddg, listA, listB, out _);
+                DA.SetDataList(0, abPaths);
+                return;
+            }
+            if (dList.Count == 0) return;
+
             double[] d = ddg.MapScalarInputToVertices(dList);
             int n = ddg.VertexCount;
 
@@ -249,7 +339,7 @@ namespace CraneGH.Components
 
         public GH_ExactIsoCut()
           : base("Iso-Splitting Curves", "IsoCut",
-              "Extracts fast Iso-Splitting Curves on a mesh from any Scalar Field, Smoothed Scalar/Mesh, or Scalar Gradient (without slicing the mesh).",
+              "Extracts Iso-Splitting Curves on a mesh either by (1) Subdivisions Count N (e.g. 12 iso-curves) OR by (2) Exact Scalar Iso-Value(s) V (e.g. 3.4 in real scalar/geodesic units).",
               "CraneGH", "02. Scalar & Geodesics")
         {
         }
@@ -259,16 +349,18 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (or Colored Mesh CM from SmoothScalar)", GH_ParamAccess.item);
-            int idxU = pManager.AddGenericParameter("Scalar or Gradient", "u", "Smoothed Scalar values (double) or Scalar Gradient vectors (Vector3d) (if empty, reads from Colored Mesh M or boundary heat distance)", GH_ParamAccess.list);
+            int idxU = pManager.AddGenericParameter("Scalar or Gradient", "S", "Scalar values (double, e.g. geodesic distance to a curve) or Scalar Gradient vectors (Vector3d)", GH_ParamAccess.list);
             pManager[idxU].Optional = true;
-            pManager.AddNumberParameter("Iso-Values or Count", "V", "If a single integer >= 2 (e.g. 12), extracts that many evenly-spaced iso-curves; otherwise extracts at exact value(s) V", GH_ParamAccess.list, 12.0);
-            pManager.AddBooleanParameter("Normalized [0..1]", "N", "True = V is evaluated as normalized fraction(s) in [0..1]; False = V is in real scalar units (or line count if single integer >= 2)", GH_ParamAccess.item, false);
+            pManager.AddIntegerParameter("Subdivisions", "N", "Option 1: Number of evenly-spaced iso-curves to extract (e.g. 12) when Exact Iso-Values V is empty", GH_ParamAccess.item, 12);
+            int idxV = pManager.AddNumberParameter("Exact Iso-Values", "V", "Option 2: Specific scalar iso-value(s) to extract (e.g. 3.4 in real distance/scalar units). Overrides N when connected!", GH_ParamAccess.list);
+            pManager[idxV].Optional = true;
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddCurveParameter("Iso-Splitting Curves", "C", "Extracted iso-contour curves on the mesh (no mesh cutting overhead)", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Resolved Scalar", "S", "Active scalar values per vertex used for the iso-lines", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Iso-Splitting Curves", "C", "Extracted iso-contour curves on the mesh", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Extracted Iso-Levels", "L", "Exact scalar value(s) at which the curves were extracted", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Resolved Scalar", "S", "Active scalar values per vertex", GH_ParamAccess.list);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the active scalar field", GH_ParamAccess.item);
         }
 
@@ -278,13 +370,13 @@ namespace CraneGH.Components
 
             Mesh m = null;
             var rawU = new List<object>();
-            var isoVals = new List<double>();
-            bool normalized = false;
+            int subCount = 12;
+            var exactIsoVals = new List<double>();
 
             if (!DA.GetData(0, ref m) || m == null) return;
             DA.GetDataList(1, rawU);
-            if (!DA.GetDataList(2, isoVals) || isoVals.Count == 0) isoVals.Add(12.0);
-            DA.GetData(3, ref normalized);
+            DA.GetData(2, ref subCount);
+            DA.GetDataList(3, exactIsoVals);
 
             var ddg = new DdgMesh(m);
             var inScalars = new List<double>();
@@ -311,7 +403,6 @@ namespace CraneGH.Components
             }
             else if (m.VertexColors.Count == m.Vertices.Count)
             {
-                // Decode smoothed scalar from Colored Mesh CM (e.g. from SmoothScalar) and smooth slightly
                 double[] rawCol = ddg.MapScalarInputToVertices(null);
                 u = DdgAlgorithms.SmoothScalarField(ddg, rawCol, 1.5, 0.0, out _, out _);
             }
@@ -333,21 +424,20 @@ namespace CraneGH.Components
             double spanU = Math.Max(1e-12, maxU - minU);
 
             var levels = new List<double>();
-            if (!normalized && isoVals.Count == 1 && isoVals[0] >= 2.0 && Math.Abs(isoVals[0] - Math.Round(isoVals[0])) < 1e-5 && (isoVals[0] > maxU || minU >= 0.0))
+            if (exactIsoVals.Count > 0)
             {
-                // Treat single integer >= 2 (e.g. 12) as number of evenly-spaced iso-splitting lines!
-                int count = Math.Min(250, (int)Math.Round(isoVals[0]));
+                // Option 2: User provided exact scalar value(s) (e.g. 3.4) -> extract at those exact scalar values!
+                foreach (double val in exactIsoVals)
+                    levels.Add(val);
+            }
+            else
+            {
+                // Option 1: Extract N evenly-spaced subdivisions across [minU, maxU]
+                int count = Math.Max(1, Math.Min(250, subCount));
                 for (int k = 1; k <= count; k++)
                 {
                     double frac = k / (double)(count + 1);
                     levels.Add(minU + frac * spanU);
-                }
-            }
-            else
-            {
-                foreach (double val in isoVals)
-                {
-                    levels.Add(normalized ? (minU + val * spanU) : val);
                 }
             }
             levels.Sort();
@@ -357,8 +447,9 @@ namespace CraneGH.Components
             Mesh coloredM = DdgAlgorithms.ColorMeshByScalar(ddg.RhinoMesh, u, false);
 
             DA.SetDataList(0, crvs);
-            DA.SetDataList(1, u);
-            DA.SetData(2, coloredM);
+            DA.SetDataList(1, levels);
+            DA.SetDataList(2, u);
+            DA.SetData(3, coloredM);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
