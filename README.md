@@ -1,54 +1,138 @@
-# CraneGH — Discrete Differential Geometry & Digital Fabrication for Grasshopper
+# CraneGH — Discrete Differential Geometry, Field Design & Mesh Segmentation for Grasshopper
 
-**CraneGH** is a self-contained Discrete Differential Geometry (DDG) and Digital Fabrication toolkit for **Rhino / Grasshopper** inspired by Keenan Crane's research (Heat Method, Vector Heat Method, Globally Optimal Direction Fields, Stripe Patterns, Spin Transformations, Boundary First Flattening, Deployable Auxetics, FlipOut Geodesic Loops, Variational Surface Cuts, Repulsive Tangent-Point Surfaces, and Signed Heat Isosurfaces).
+**CraneGH** is a self-contained, pure C# **Discrete Differential Geometry (DDG)**, **Vector/Cross Field Design**, **Surface Segmentation**, and **Digital Fabrication** plugin for **Rhino / Grasshopper**.
 
-## Streamlined 5-Panel Architecture (Minimal Inputs, Maximum Control)
+Built directly on top of cotangent Laplacians, Connection Laplacians, Wavefront Fast-Marching Eikonal solvers, and sparse linear algebra (with **zero external native DLL dependencies**), CraneGH brings modern geometry-processing research into Grasshopper with **minimal inputs (2–3 per component)**, **full `Graft` / multi-mesh DataTree compatibility**, and **dedicated GPU-batched visualizers**.
 
-1. **`01. Operators & Display`**
-   - **`Curvatures`**: Discrete Gaussian ($K$), Mean ($H$), Principal Curvature Direction, and Dual Area.
-   - **`MCFlow`**: Implicit Mean Curvature Flow mesh smoothing.
-   - **`SmoothScalar`**: Crease-preserving Cotan-Laplace scalar smoothing & gradient extraction.
-   - **`WalkOnMesh`**: Intrinsic scalar gradient evaluation and Steepest Descent / Ascent / Iso-Contour / Stochastic walks on meshes.
-   - **`ScalarView`**: Interactive scientific colormap evaluator (Crane Heat, CoolWarm, Viridis, Turbo, Zebra) with live 3D Min/Max callouts.
+---
 
-2. **`02. Geodesics & Iso-Cut`**
-   - **`HeatDist`**: Geodesic distance and redistributed gradient from **any external geometry** (Points, Curves, Meshes, or Breps).
-   - **`CleanCloud` (`Point Cloud Clean & Fast Signed Distance`)**: Inspired by *Fast Pointwise Signed Distance for Point Clouds / Points as Tori* (Feng & Crane 2024). Filters statistical outliers from raw point clouds, estimates globally consistent normals, projects noisy points onto the smooth zero-isosurface $d_{\pm}=0$, evaluates pointwise signed distances, and reconstructs a watertight 3D mesh.
-   - **`IsoCut`**: Exact sub-triangle Iso-Contour extraction and topological mesh band slicing in real physical units (e.g. `4.55`) or normalized `[0..1]`.
-   - **`GeoPath`**: Exact shortest geodesic paths traced along the negative heat gradient.
-   - **`FlipOut`**: Intrinsic geodesic curve & network shortening with sliding junctions.
+## Installation
 
-3. **`03. Vector & Direction Fields`**
-   - **`SmoothField`**: Multi-method Vector & Scalar Gradient smoothing:
-     - `0`: Connection Laplacian (Vector Heat parallel transport)
-     - `1`: Helmholtz-Hodge / Eikonal Gradient Redistribution (uniform non-bunching flow across the mesh)
-     - `2`: Crease-Anisotropic Feature-Preserving Vector Diffusion
-     - `3`: 4-RoSy Symmetric Cross Field Smoothing
-   - **`OptField`**: Globally Optimal $N$-Direction Fields ($N = 1, 2, 4, 6$).
-   - **`VecHeat`**: Parallel transport of tangent vectors via the Vector Heat Method.
-   - **`VecFamily`**: Quantizes continuous tangent vector fields into a discrete Family of Vectors and segments faces by vector family.
-   - **`GuidedFlow` (`Scalar-Weighted Vector Flow & Geodesic`)**: Combines a **Vector Field (`V`)** with a **Scalar Relevance Field `W` in `[0..1]`** (`0` = avoid / do not pass, `1` = high priority / attract). Actively pushes trajectories uphill via $+\nabla W$ into `1`-zones while surfing along `V`, computes the **Anisotropic Geodesic Path (`ABPath`)**, and outputs **5/6-Axis Fabrication Planes**.
-   - **`VecView` (`Vector, Cross & Gradient Inspector`)**: Multi-mode visualizer & differential analyzer on meshes:
-     - `0`: Directed Vector Arrows + Magnitude Heatmap
-     - `1`: 4-RoSy Symmetric Crosses ($U/V$ orthogonal frames)
-     - `2`: Geodesic Gradient Arrows + Orthogonal Wavefront Ticks
-     - `3`: Covariant Vector Gradient ($\|\nabla \mathbf{V}\|$), Discrete Divergence ($\nabla \cdot \mathbf{V}$), and Rotor/Curl ($(\nabla \times \mathbf{V}) \cdot \mathbf{N}$)
+1. Download **`CraneGH.gha`** from the repository root (`CraneGH.gha`).
+2. Right-click `CraneGH.gha` $\rightarrow$ **Properties** $\rightarrow$ check **Unblock** (if downloaded from the web) $\rightarrow$ **OK**.
+3. Copy `CraneGH.gha` into your Grasshopper Libraries folder:
+   ```text
+   %APPDATA%\Grasshopper\Libraries\CraneGH.gha
+   ```
+4. Restart Rhino 8 and open Grasshopper. The **`CraneGH`** tab will appear with 5 streamlined panels.
 
-4. **`04. Stripes & Conformal`**
-   - **`Stripes`** & **`CrossQuads`**: Equidistant stripe patterns with topological bifurcations and orthogonal quad grids at exact physical spacing $D$.
-   - **`BFF`**, **`Auxetics`**, **`SpinXForm`**: Boundary First Flattening, Deployable Auxetic kirigami mechanisms, and Quaternion Dirac Spin conformal deformations.
-   - **`RepulsiveFold` (`Repulsive Shell Folding & Self-Collision`)**: Folds, bends, or interpolates a thin shell mesh from State $A$ to State $B$ using Sobolev-preconditioned **Tangent-Point Self-Collision Repulsion** + Elastic Membrane preservation (*Repulsive Shells*, Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024).
+> **Tip:** Many visualizers and segmenters include a built-in **Area-Normalized Test Mesh (`Area = 1000.0`)** when the `Mesh (M)` input is left empty, so you can test and compare algorithms immediately.
 
-5. **`05. Mold, Segmentation & CAM`**
-   - **`CurvSeg` (`Curvature Regime & Inflection Cutter`)**: Segments a mesh into **Concave** (`Ccv`) and **Convex** (`Cvx`) pieces by placing subdivision cut lines at **Zero-Curvature Inflection $H = T$ (`Mode 0`)**, **Curvature Maxima Ridges (`Mode 1`, leaving concave basins)**, **Curvature Minima Valleys (`Mode 2`, leaving convex lobes)**, or **3-Regime Concave/Flat/Convex Bands (`Mode 3`)**.
-   - **`MultiMold` (`Multi-Piece Mold & Draft Cut`)**: Partitions complex 3D meshes into $K$ extractable mold pieces combining **Multiple Pull Vectors** (or automatic **Curvature-driven pull discovery**) + **Heat Geodesic Distance** (preventing disconnected islands) + **Curvature Ridge Parting Line snapping** + **Undercut detection**.
-   - **`KMeansSeg`** & **`VarCuts`**: Variational K-Means++ normal/vector/crease clustering and Sharp & Crane (2018) Variational Surface Cuts.
-   - **`RollSphere`**: Tangent-Point Rolling Spheres (Repulsive Surfaces 2021) for CNC Ball-Mill gouge detection (`+R`), interior medial wall thickness (`-R`), and collision-free mesh offsetting.
-   - **`Skeleton`**: 3D Medial Axis Skeleton Curves and Shrinking-Ball Spine via Implicit Mean Curvature Contraction + Inscribed Spheres.
-   - **`HeatIsoSurf`**: Watertight 3D Heat Offset Mesh, Smooth Boolean Union Isosurface of multiple geometries, and 3D Vector Field Isosurface via Marching Tetrahedra.
-   - **`FabPaths`**: Concentric & Spiral CNC Milling / Curved-Layer 3D Printing toolpaths with Collision-Smoothed 5/6-Axis Planes.
-   - **`RobotPlanes`**: Geodesic Traveling Salesperson (TSP) trajectory optimizer and $SO(3)$ Collision-Avoiding Robot Plane Stabilizer (eliminates drastic wrist turns and tilts away from mesh concavities).
-   - **`RepulsiveBot` (`Repulsive Shells & C-Space Robot Path`)**: Inspired by *Repulsive Shells* (Sassen, Schumacher, Rumpf, Wardetzky, Crane 2024) & *Repulsive Curves* (2021). Computes optimal collision- & singularity-free Robot Toolpaths from $A$ to $B$ around obstacle meshes and constructs the **2D Configuration-Space (C-Space) Energy Landscape Mesh (`CMap`) + Geodesic Path (`CPath`)**:
-     - `Mode 0`: Keeps the TCP strictly fixed on your 3D printing / milling path while optimizing Spindle & Plane orientation to avoid spindle-body collisions, flange plane collisions, and robot wrist singularities.
-     - `Mode 1`: Full 3D Pick & Place obstacle-avoiding geodesic trajectory from $A$ to $B$ with simultaneous spindle shell clearance.
-     - `Mode 2`: 2D Spherical Orientation Cone Map $[\theta, \phi]$ for singularity & self-collision analysis.
+---
+
+## Plugin Architecture (5 Panels)
+
+### `01. Visualizers` — Field, Curvature & Mesh Inspection
+Pure visual and numerical analyzers (no extraneous segmentation/iso-curve polylines) with lightweight GPU-batched rendering and 3D viewport Min/Max tags.
+
+| Component | Nickname | Main Function & Key Inputs |
+| :--- | :---: | :--- |
+| **Area-Normalized Test Mesh** | `TestMesh` | Generates built-in 3D benchmark meshes (`0` Saddle-Dome + Crease, `1` 3-Lobe Organic, `2` CAD Fandisk Block, `3` Torus) or normalizes any custom mesh to an exact **Surface Area `A`** (default `1000.0`) for fair comparison, outputting a surface `Test Curve` and `Test Points`. |
+| **Scalar Field Visualizer** | `ScalarView` | Colors any mesh by a scalar field `S` using scientific palettes (`0` Crane Heat, `1` CoolWarm Diverging, `2` Viridis, `3` Turbo, `4` Zebra) with live 3D `Min` / `Max` tags and domain `[Min, Max]`. |
+| **Scalar Gradient Visualizer** | `GradView` | Computes and displays the intrinsic surface gradient $\nabla S$ and orthogonal iso-wavefront ticks, coloring the mesh by gradient slope $\|\nabla S\|$. |
+| **Vector Field Visualizer** | `VecView` | Dedicated **1-direction** vector field visualizer (`M`, `V`, `S`) using batched GPU directional segments, coloring the mesh by magnitude $\|V\|$ and outputting Divergence ($\nabla \cdot V$) and Curl. |
+| **X-Cross & Div/Curl Visualizer** | `CrossView` | Dedicated **4-way X-Cross** field visualizer (`M`, `V`, `L`) showing orthogonal $U$ (Cyan) and $V$ (Coral) cross segments, Divergence, and Curl/Rotor intensity. |
+| **Gaussian Curvature Visualizer** | `GaussView` | Separate visualizer for **Gaussian Curvature $K = \kappa_1 \kappa_2$** (Blue = Hyperbolic Saddle $K < 0$, White = Developable $K = 0$, Red = Elliptic Dome $K > 0$). |
+| **Mean Curvature Visualizer** | `MeanView` | Separate visualizer for **Mean Curvature $H = (\kappa_1 + \kappa_2)/2$** (Blue = Concave Valley $H < 0$, White = Minimal/Flat $H = 0$, Red = Convex Ridge $H > 0$) + Mean Curvature Normals $H\mathbf{N}$. |
+| **Principal Curvatures (K1 & K2) Visualizer** | `PrinCurvView` | Separate visualizer for **Max ($\kappa_1$) & Min ($\kappa_2$) Principal Curvatures**, **Curvedness**, **Koenderink Shape Index**, and combed principal directions $(\mathbf{d}_1, \mathbf{d}_2)$. |
+| **Mesh Area, Quality & Topology Analyzer** | `MeshAnalyze` | Reports Surface Area, Edge Length Domain, Euler Characteristic, Naked Edges, Sharp Creases, Triangle Aspect Quality `[0..1]`, and Vertex Valence. |
+| **Mesh Crease, Concavity & Anisotropy Analyzer** | `CreaseAnalyze` | Analyzes Signed Dihedral Angles (`-` Concave Valley / `+` Convex Ridge), Crease Intensity `[0..1]`, and Curvature Anisotropy $\tau \in [0..1]$. |
+| **Mesh Mold Draft & Undercut Analyzer** | `DraftAnalyze` | Evaluates per-vertex Mold Draft Angles `[-90°..+90°]` and Undercut Severity `[0..1]` relative to a Pull Direction `D`. |
+
+---
+
+### `02. Scalar & Geodesics` — Distances, Iso-Curves & Geodesic Paths
+Core scalar field solvers and exact geodesic computations on triangle meshes.
+
+| Component | Nickname | Main Function & Key Inputs |
+| :--- | :---: | :--- |
+| **Heat Geodesic & Signed Distance** | `HeatDist` | Computes smooth, gradual **Geodesic Distance (`d >= 0`)**, **Signed Geodesic Distance (`SD`)**, **Smooth Gradient (`G`)**, and **Farthest Point (`FP`)** from **Points, Curves, Meshes, Breps, or default Naked Edges**. Uses global-scale Heat Diffusion + Wavefront-Ordered Planar-Triangle Eikonal + Screened Poisson integration so `d = 0.0` at the source and grows linearly to `Max` across the entire mesh (even on narrow-neck flaring surfaces). |
+| **Iso-Splitting Curves** | `IsoCut` | Extracts exact sub-triangle iso-curves and slices the mesh into bands via either **(1) Subdivisions Count `N`** (e.g., `12` evenly spaced iso-curves) OR **(2) Exact Scalar Iso-Value(s) `V`** (e.g., `3.4` in real geodesic/scalar units). |
+| **Geodesic Path A to B** | `GeoAB` | Classic direct **Point A to Point B** shortest geodesic curve on a mesh (requires no precomputed scalar field). |
+| **Geodesic Field Path** | `GeoPath` | Traces shortest geodesic paths from target points down any Distance Field `d`. |
+| **Geodesic Curve Shorten** | `FlipOut` | Shortens curves, loops, or multi-curve networks directly on a mesh into taut intrinsic geodesics (*FlipOut* algorithm). |
+| **Scalar & Gradient Stripes** | `VarStripes` | Generates variable-spacing stripes driven by a Scalar Field or Scalar Gradient (high values = denser stripes, low values = sparser stripes) with **`Touch Ends (T)`** control (`False` by default). |
+| **Discrete Curvatures** | `Curvatures` | Outputs raw per-vertex Gaussian Curvature `K`, Mean Curvature `H`, Principal Direction `D`, Dual Area `A`, and Welded Mesh `WM`. |
+| **Smooth Scalar Field** | `SmoothScalar` | Range-preserving Cotan-Laplace diffusion smoothing for any scalar field, with optional **Crease Barrier `B`** to stop smoothing across sharp edges. |
+
+---
+
+### `03. Vector Fields & Stripes` — Tangent Fields, Cross Fields & Stripes
+Tools to design, smooth, rotate, mix, discretize, and turn tangent vector/cross fields into equidistant stripe patterns.
+
+| Component | Nickname | Main Function & Key Inputs |
+| :--- | :---: | :--- |
+| **Cross Field (U & V)** | `CrossField` | Computes a scale-invariant, **globally combed 4-RoSy Cross Field (`U` and `V = N × U`)** aligned with naked boundaries, sharp creases, principal curvatures, or optional **Guide Vectors/Curves `G`**, plus singularity points `P`. |
+| **Cross Field Quad Stripes** | `CrossQuads` | Generates two orthogonal families of equidistant Quad Stripe curves (**`U Stripes`** and **`V Stripes`**) at spacing `D` aligned to a combed Cross Field, with **`Touch Ends (T)`** control (`False` by default). |
+| **Vector Field Stripes** | `Stripes` | Generates stripe curves aligned to a Vector Field `V`. Pass a single number in `D` for strictly equidistant stripes, or a **Scalar Field list in `D`** to weight local stripe density (`Touch Ends T` default `False`). |
+| **Vector Field & Stripes from Curves** | `CrvField` | Builds a smooth tangent Vector Field `V` (and orthogonal field `O`) parallel to input **Guide Curves `G`**, plus equidistant Stripe Curves `C`. |
+| **Smooth Vector Field** | `SmoothField` | Smooths and redistributes any tangent Vector Field or Scalar Gradient (`0` Connection Laplacian / Vector Heat, `1` Helmholtz-Hodge Redistribution, `2` Crease-Anisotropic Smooth, `3` 4-RoSy). |
+| **Rotate Tangent Vectors** | `RotateVec` | Rotates a tangent Vector Field `V` around each vertex normal by a uniform angle `A` (e.g., `90°`) or a per-vertex Scalar Field of angles. |
+| **Scalar + Vector Field Mixer** | `FieldMix` | Combines a Scalar Field `S` and Vector Field `V` into Scalar-Weighted Vectors, Gradient-Blended Vectors, Scalar-Rotated Vectors, and Normalized `[0..1]` Weights for `Stripes` or `QuadRemesh`. |
+| **Scalar-Attracted Vector Field** | `ScalarVec` | Deflects a Vector Field `V` toward high-scalar zones (`S = 1`) and away from low-scalar zones (`S = 0`), outputting the attracted vectors `VA` and flow curves `C`. |
+| **Discretize Vector Field** | `VecFamily` | Quantizes a continuous Vector Field into `K` discrete canonical vector directions (or a custom Vector Family `VF`) and segments the mesh by vector family. |
+| **Vector Parallel Transport** | `VecHeat` | Parallel-transports tangent vectors from seed points across curved meshes using the **Vector Heat Method**. |
+| **Walk on Mesh & Gradient** | `WalkOnMesh` | Computes intrinsic scalar gradients and traces paths along Steepest Descent (`0`), Ascent (`1`), Iso-Contour (`2`), or Stochastic Walk (`3`). |
+
+---
+
+### `04. Segmentation & Fabrication` — Crease, Curvature, Mold & Geometry Processing
+Surface segmentation methods (both user-controlled `K` and geometry-driven automatic) plus fabrication geometry utilities.
+
+| Component | Nickname | Main Function & Key Inputs |
+| :--- | :---: | :--- |
+| **CAD Crease & Curvature Tensor Segmenter** | `TensorRectSeg` | Decomposes a mesh into **`K` constant-curvature and crease-bounded mold/CAD patches** (`M`, `Segments K`, `Crease Angle A`) via Principal Curvature Tensor superfacets, Region Adjacency Graph (RAG) merging, and Boundary Rectification (*Lavoué, Dupont, Baskurt LIRIS-1815*). Set `K = 0` for automatic patch count. |
+| **CGAL SDF & Crease Graph-Cut Segmenter** | `SDFSeg` | Automatically segments a 3D mesh by geometry using the **Shape Diameter Function (SDF)** local thickness modes and Dihedral Crease Graph-Cut (no `K` needed). |
+| **Salient Spectral & Concavity Segmenter** | `SpectralSeg` | Automatically segments organic/branching meshes via Recursive Salient Spectral Cuts and the Concavity Minima Rule (*Zhang & Liu VMV 2005 / Liu & Zhang EG 2007*). |
+| **K-Means Normal & Vector Segmenter** | `KMeansSeg` | Segments a mesh into `K` contiguous pieces using K-Means clustering on Face Normals and an optional Vector Field, with taut geodesic seam boundaries. |
+| **Geodesic Seam Mesh Smooth** | `GeoSeam` | Projects and smooths the boundary vertices of segmented Sub-Meshes directly onto taut **Geodesic Seams (*costuras geodésicas*)** while keeping adjacent pieces watertight. |
+| **Concave / Convex Curvature Segmenter** | `CurvSeg` | Segments a mesh into Concave and Convex regions at Inflection $H = 0$ (`0`), Curvature Maxima Ridges (`1`), or Curvature Minima Valleys (`2`). |
+| **Scalar & Geodesic Band Segmenter** | `ScalarSeg` | Slices a mesh into `K` clean sub-mesh bands across the level-sets of any Scalar Field (`HeatDist`, Curvature, Height, etc.). |
+| **Multi-Piece Mold Segmenter** | `MultiMold` | Partitions a 3D mesh into `K` extractable Mold Pieces with Pull Vectors, Parting Lines, and Draft/Undercut analysis. |
+| **Milling & Print Iso-Paths** | `FabPaths` | Generates concentric Milling or Curved-Layer Printing Iso-Paths at Stepover `D` plus Rolling-Sphere Offset Mesh & Toolpaths. |
+| **Rolling-Sphere Offset & Gouge** | `RollSphere` | Computes Tangent-Point Rolling Spheres (`+R` exterior clearance / `-R` interior wall thickness) and collision-free offset meshes. |
+| **3D Heat Offset & Isosurface** | `HeatIsoSurf` | Reconstructs watertight 3D Offset Meshes, Smooth Boolean Union Isosurfaces, and Subtractive Iso-Boxes from Meshes, Curves, or Vector Fields. |
+| **Medial Axis Skeleton** | `Skeleton` | Extracts 3D Medial Axis Skeleton Curves, Contracted Spine Mesh, and inscribed wall-thickness radii via Laplacian contraction. |
+| **Point Cloud Clean & Signed Distance** | `CleanCloud` | Denoises raw 3D Point Clouds, estimates consistent normals, evaluates Fast Pointwise Signed Distance, and reconstructs watertight meshes. |
+| **Mean Curvature Mesh Smooth** | `MCFlow` | Smooths 3D mesh geometry via implicit Cotan-Laplace Mean Curvature Flow with optional boundary pinning. |
+
+---
+
+### `05. Remesh & Advanced DDG` — Quad Remeshing, Developability & Flows
+
+| Component | Nickname | Main Function & Key Inputs |
+| :--- | :---: | :--- |
+| **Field & Distance Quad Remesh** | `QuadRemesh` | Quad-remeshes a 3D surface controlling exact **Quad Face Distance `D`** (single number = equidistant quads, or Scalar Field = weighted quad density) aligned with a Vector/Cross Field. |
+| **Developable Mesh & Rulings** | `Developable` | Optimizes a mesh toward piecewise developable strips ($K \to 0$) and extracts straight ruling lines (*Stein, Grinspun, Crane SIGGRAPH 2018*). |
+| **Optimal Cone Singularities & Cuts** | `OptimalCones` | Places optimal cone singularities and minimal geodesic seam cuts to minimize conformal flattening distortion (*Soliman, Sorkine-Hornung, Crane SIGGRAPH 2018*). |
+| **Surface Winding Number & Trim** | `SurfWinding` | Computes exact Piecewise-Constant Winding Numbers on a mesh from open/broken curves and trims Inside/Outside regions (*Feng, Gillespie, Crane SIGGRAPH 2023*). |
+| **Conformal Willmore Bending Flow** | `WillmoreFlow` | Fairs 3D surfaces by minimizing Willmore bending energy ($\int H^2 \, dA$) with optional Scalar Field stiffness weights (*Crane, Pinkall, Schröder SIGGRAPH 2013*). |
+
+---
+
+## Typical Workflows
+
+1. **Geodesic Distance $\rightarrow$ Iso-Splitting Curves / Variable Stripes**
+   - `Mesh` + `Curve / Points` $\rightarrow$ **`HeatDist`** (`d`, `G`) $\rightarrow$ **`ScalarView`** (inspect gradient) $\rightarrow$ **`IsoCut`** (extract `N` subdivisions or exact distance `V = 3.4`) or **`VarStripes`**.
+2. **Cross Field $\rightarrow$ Orthogonal Quad Stripes / Controlled Quad Remesh**
+   - `Mesh` (+ optional `Guide Curves`) $\rightarrow$ **`CrossField`** (`U`, `V`) $\rightarrow$ **`CrossQuads`** (`UC`, `VC` at spacing `D`) or **`QuadRemesh`** (with optional `FieldMix` scalar weights).
+3. **CAD / Mold Crease Segmentation $\rightarrow$ Geodesic Seam Smoothing**
+   - `Mesh` $\rightarrow$ **`CreaseAnalyze`** / **`GaussView`** (inspect creases & curvature) $\rightarrow$ **`TensorRectSeg`** (`Segments K`, `Crease Angle A`) $\rightarrow$ **`GeoSeam`** (project & smooth seam vertices onto taut geodesic seams).
+
+---
+
+## Research References
+
+CraneGH implements algorithms inspired by the following foundational papers in Discrete Differential Geometry and Geometry Processing:
+- **The Heat Method for Distance Computation** — Crane, Weischedel, Wardetzky (*ACM TOG 2013 / CACM 2017*)
+- **The Vector Heat Method** — Sharp, Soliman, Crane (*ACM TOG 2019*)
+- **The Signed Heat Method / Surface Winding Numbers** — Feng, Gillespie, Crane (*SIGGRAPH 2023 / 2024*)
+- **Globally Optimal Direction Fields** — Knöppel, Crane, Pinkall, Schröder (*SIGGRAPH 2013*)
+- **Stripe Patterns on Surfaces** — Knöppel, Crane, Pinkall, Schröder (*SIGGRAPH 2015*)
+- **Mixed-Integer Quadrangulation** — Bommes, Zimmer, Kobbelt (*SIGGRAPH 2009*)
+- **Curvature Tensor Based Triangle Mesh Segmentation with Boundary Rectification** — Lavoué, Dupont, Baskurt (*LIRIS-1815*)
+- **Mesh Segmentation via Shape Diameter Function (CGAL)** — Shapira, Shamir, Cohen-Or (*Visual Computer 2008*)
+- **Salient Spectral Mesh Segmentation** — Zhang & Liu (*VMV 2005*) / Liu & Zhang (*Eurographics 2007*)
+- **You Can Find Geodesic Paths in Triangle Meshes by Just Flipping Edges (FlipOut)** — Sharp & Crane (*SIGGRAPH Asia 2020*)
+- **Developability of Triangle Meshes** — Stein, Grinspun, Crane (*SIGGRAPH 2018*)
+- **Robust Fairing via Conformal Curvature Flow (Willmore Flow)** — Crane, Pinkall, Schröder (*SIGGRAPH 2013*)
