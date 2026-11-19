@@ -392,16 +392,14 @@ namespace CraneGH.Components
     public class GH_MeshScalarDisplay : GH_Component
     {
         private Mesh _coloredMesh;
-        private readonly List<Polyline> _isoLines = new List<Polyline>();
         private Point3d _minPt;
         private Point3d _maxPt;
         private double _minVal;
         private double _maxVal;
-        private bool _showTags = true;
 
         public GH_MeshScalarDisplay()
           : base("Scalar Field Visualizer", "ScalarView",
-              "Visualizes any scalar field on a mesh with scientific colormaps (0=Heat, 1=CoolWarm, 2=Viridis, 3=Turbo, 4=Zebra), iso-lines, and 3D Min/Max value tags.",
+              "Visualizes any scalar field on a mesh with scientific colormaps (0=Heat, 1=CoolWarm, 2=Viridis, 3=Turbo, 4=Zebra) and 3D Min/Max value tags (no segmentation/iso-polylines).",
               "CraneGH", "01. Visualizers")
         {
         }
@@ -411,24 +409,21 @@ namespace CraneGH.Components
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
             pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            pManager.AddNumberParameter("Scalar Field", "u", "Scalar values per vertex or face", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Scalar Field", "S", "Scalar values per vertex or face", GH_ParamAccess.list);
             pManager.AddIntegerParameter("Palette", "P", "Colormap: 0 = Crane Heat, 1 = CoolWarm Diverging, 2 = Viridis, 3 = Turbo Rainbow, 4 = Zebra Bands", GH_ParamAccess.item, 0);
-            pManager.AddIntegerParameter("Iso-Lines", "N", "Number of live viewport iso-contour lines to overlay (0 = none)", GH_ParamAccess.item, 12);
-            pManager.AddBooleanParameter("Show Value Tags", "T", "Display 3D Min / Max scalar value callouts in the viewport", GH_ParamAccess.item, true);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
             pManager.AddMeshParameter("Colored Mesh", "CM", "Vertex-colored mesh with selected scientific palette", GH_ParamAccess.item);
-            pManager.AddCurveParameter("Iso-Contours", "C", "Extracted iso-contour polylines", GH_ParamAccess.list);
             pManager.AddIntervalParameter("Scalar Domain", "D", "Domain [Min, Max] of the scalar field in real units", GH_ParamAccess.item);
+            pManager.AddPointParameter("Min / Max Points", "P", "[MinPoint, MaxPoint] locations on the mesh", GH_ParamAccess.list);
         }
 
         protected override void BeforeSolveInstance()
         {
             base.BeforeSolveInstance();
             _coloredMesh = null;
-            _isoLines.Clear();
             CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
         }
 
@@ -437,16 +432,11 @@ namespace CraneGH.Components
             Mesh m = null;
             var uList = new List<double>();
             int palette = 0;
-            int isoCount = 12;
-            bool showTags = true;
 
             if (!DA.GetData(0, ref m) || m == null) return;
-            if (!DA.GetDataList(1, uList) || uList.Count == 0) return;
+            DA.GetDataList(1, uList);
             DA.GetData(2, ref palette);
-            DA.GetData(3, ref isoCount);
-            DA.GetData(4, ref showTags);
 
-            _showTags = showTags;
             var ddg = new DdgMesh(m);
             double[] u = ddg.MapScalarInputToVertices(uList);
 
@@ -463,20 +453,9 @@ namespace CraneGH.Components
 
             _coloredMesh = DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, u, palette);
 
-            if (isoCount > 0)
-            {
-                var levels = new List<double>(isoCount);
-                for (int k = 1; k <= isoCount; k++)
-                {
-                    double frac = (double)k / (isoCount + 1);
-                    levels.Add(_minVal + frac * (_maxVal - _minVal));
-                }
-                _isoLines.AddRange(ddg.ExtractIsoContours(u, levels));
-            }
-
             DA.SetData(0, _coloredMesh);
-            DA.SetDataList(1, _isoLines);
-            DA.SetData(2, new Interval(_minVal, _maxVal));
+            DA.SetData(1, new Interval(_minVal, _maxVal));
+            DA.SetDataList(2, new Point3d[] { _minPt, _maxPt });
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
@@ -484,15 +463,8 @@ namespace CraneGH.Components
             base.DrawViewportWires(args);
             if (Hidden || Locked || _coloredMesh == null) return;
 
-            Color isoCol = Color.FromArgb(200, 25, 25, 30);
-            foreach (var pl in _isoLines)
-                args.Display.DrawPolyline(pl, isoCol, 1);
-
-            if (_showTags)
-            {
-                args.Display.DrawDot(_minPt, $"Min: {_minVal:0.###}", Color.FromArgb(40, 90, 200), Color.White);
-                args.Display.DrawDot(_maxPt, $"Max: {_maxVal:0.###}", Color.FromArgb(215, 50, 40), Color.White);
-            }
+            args.Display.DrawDot(_minPt, $"Min: {_minVal:0.###}", Color.FromArgb(40, 90, 200), Color.White);
+            args.Display.DrawDot(_maxPt, $"Max: {_maxVal:0.###}", Color.FromArgb(215, 50, 40), Color.White);
         }
 
         public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000032");
@@ -669,5 +641,210 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000052");
+    }
+
+    public class GH_StandardTestMesh : GH_Component
+    {
+        public GH_StandardTestMesh()
+          : base("Area-Normalized Test Mesh", "TestMesh",
+              "Generates built-in benchmark 3D test meshes OR normalizes any custom mesh so all meshes have the exact same Surface Area (default = 1000.0) for fair side-by-side comparison, plus a Test Curve and Test Points on the surface.",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("TestMesh");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Custom Mesh", "M", "Optional custom mesh to normalize to Target Area A (leave empty to generate built-in Preset Shape P)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddIntegerParameter("Preset Shape", "P", "Built-in test mesh when M is empty: 0 = Saddle-Dome + Crease + Naked Edge, 1 = 3-Lobe Branching Surface, 2 = CAD Fandisk Crease Block, 3 = Genus-1 Torus", GH_ParamAccess.item, 0);
+            pManager.AddNumberParameter("Target Area", "A", "Exact target surface area to normalize the mesh to (so all test meshes have identical area!)", GH_ParamAccess.item, 1000.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Normalized Mesh", "M", "3D mesh centered at origin with exact Surface Area = A", GH_ParamAccess.item);
+            pManager.AddCurveParameter("Test Curve", "TC", "Smooth curve lying directly on the test mesh (ready to plug into HeatDist, CrvField, SurfWinding!)", GH_ParamAccess.item);
+            pManager.AddPointParameter("Test Points", "TP", "Pair of test points [A, B] on the mesh (ready to plug into HeatDist or GeoAB!)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Surface Area", "A", "Verified total surface area of the output mesh", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh customM = null;
+            int preset = 0;
+            double targetArea = 1000.0;
+
+            DA.GetData(0, ref customM);
+            DA.GetData(1, ref preset);
+            DA.GetData(2, ref targetArea);
+
+            Mesh normMesh = DdgAlgorithms.CreateAreaNormalizedTestMesh(
+                customM, preset, targetArea,
+                out Curve testCrv,
+                out List<Point3d> testPts,
+                out double finalArea);
+
+            DA.SetData(0, normMesh);
+            DA.SetData(1, testCrv);
+            DA.SetDataList(2, testPts);
+            DA.SetData(3, finalArea);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000069");
+    }
+
+    public class GH_MeshQualityTopologyAnalyzer : GH_Component
+    {
+        public GH_MeshQualityTopologyAnalyzer()
+          : base("Mesh Area, Quality & Topology Analyzer", "MeshAnalyze",
+              "Analyzes mesh Surface Area, Edge Lengths, Aspect Ratio Quality, Dihedral Creases, Valence, and Topology (pure visual + numerical analyzer without iso-curves).",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("MeshAnalyze");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddIntegerParameter("Metric Mode", "Mode", "0 = Vertex Dual Area, 1 = Triangle Aspect Ratio Quality [0..1], 2 = Max Dihedral Crease Angle (Deg), 3 = Vertex Valence", GH_ParamAccess.item, 1);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Total Area", "A", "Exact total surface area of the mesh", GH_ParamAccess.item);
+            pManager.AddIntervalParameter("Edge Domain", "E", "Domain [MinEdge, MaxEdge] of mesh edge lengths", GH_ParamAccess.item);
+            pManager.AddTextParameter("Topology Info", "I", "Detailed summary of Vertices, Faces, Area, Naked Edges, Sharp Creases, Shells, and Euler Characteristic", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Metric Scalar", "S", "Per-vertex scalar values of the selected Metric Mode", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "False-color analysis mesh", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh m = null;
+            int mode = 1;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref mode);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            double[] metric = DdgAlgorithms.ComputeMeshQualityAndTopologyAnalysis(
+                ddg, mode,
+                out double area,
+                out Interval edgeDom,
+                out string report,
+                out Mesh coloredMesh);
+
+            DA.SetData(0, area);
+            DA.SetData(1, edgeDom);
+            DA.SetData(2, report);
+            DA.SetDataList(3, metric);
+            DA.SetData(4, coloredMesh);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000070");
+    }
+
+    public class GH_MeshCreaseConcavityAnalyzer : GH_Component
+    {
+        public GH_MeshCreaseConcavityAnalyzer()
+          : base("Mesh Crease, Concavity & Anisotropy Analyzer", "CreaseAnalyze",
+              "Analyzes signed Dihedral Angles (- = Concave Valley, + = Convex Ridge), Crease Intensity [0..1], and Curvature Anisotropy Tau [0..1] per vertex.",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("CreaseAnalyze");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized CAD Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Crease Threshold (Deg)", "A", "Reference dihedral angle in degrees for crease intensity normalization", GH_ParamAccess.item, 25.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Signed Dihedral (Deg)", "SD", "Signed dihedral angle in degrees per vertex (Negative = Concave Valley, Positive = Convex Ridge)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Crease Intensity", "CI", "Normalized [0..1] crease salience per vertex", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Curvature Anisotropy", "Tau", "Relative principal curvature anisotropy (|Kmax| - |Kmin|) / |Kmax| in [0..1]", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "False-color mesh (Blue = Concave Valley, White = Smooth, Red = Convex Crease Ridge)", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh m = null;
+            double thresh = 25.0;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref thresh);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 2, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            double[] signedDihedral = DdgAlgorithms.ComputeMeshCreaseAndConcavityAnalysis(
+                ddg, thresh,
+                out double[] creaseSalience,
+                out double[] anisotropyTau,
+                out Mesh coloredMesh);
+
+            DA.SetDataList(0, signedDihedral);
+            DA.SetDataList(1, creaseSalience);
+            DA.SetDataList(2, anisotropyTau);
+            DA.SetData(3, coloredMesh);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000071");
+    }
+
+    public class GH_MeshDraftUndercutAnalyzer : GH_Component
+    {
+        public GH_MeshDraftUndercutAnalyzer()
+          : base("Mesh Mold Draft & Undercut Analyzer", "DraftAnalyze",
+              "Analyzes per-vertex Mold Draft Angles [-90..+90 deg] and Undercut Severity [0..1] relative to a Pull Direction D (pure visual + scalar analyzer without cutting polylines).",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("DraftAnalyze");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddVectorParameter("Pull Direction", "D", "Mold extraction / pull direction vector", GH_ParamAccess.item, Vector3d.ZAxis);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Draft Angle (Deg)", "Deg", "Draft angle in degrees [-90..+90] per vertex relative to Pull Direction D", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Undercut Severity", "U", "Undercut severity [0..1] per vertex (0 = safe draft >= 3 deg, 1 = severe undercut)", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "False-color draft angle mesh (Blue = Undercut, White = 0 deg Vertical Wall, Red = Positive Draft)", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh m = null;
+            Vector3d pullDir = Vector3d.ZAxis;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref pullDir);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            double[] draftDeg = DdgAlgorithms.ComputeMeshDraftAndUndercutAnalysis(
+                ddg, pullDir,
+                out double[] undercutSev,
+                out Mesh coloredMesh);
+
+            DA.SetDataList(0, draftDeg);
+            DA.SetDataList(1, undercutSev);
+            DA.SetData(2, coloredMesh);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000072");
     }
 }

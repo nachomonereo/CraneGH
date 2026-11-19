@@ -2524,6 +2524,44 @@ namespace CraneGH.Core
                 out _, out _);
         }
 
+        public static List<GeometryBase> ParseAnyGeometryInputs(IEnumerable<object> rawInputs)
+        {
+            var result = new List<GeometryBase>();
+            if (rawInputs == null) return result;
+
+            foreach (object raw in rawInputs)
+            {
+                if (raw == null) continue;
+                object val = (raw is Grasshopper.Kernel.Types.IGH_Goo goo) ? goo.ScriptVariable() : raw;
+                if (val == null) continue;
+
+                if (val is Point3d pt && pt.IsValid)
+                    result.Add(new Rhino.Geometry.Point(pt));
+                else if (val is Point3f ptf && ptf.IsValid)
+                    result.Add(new Rhino.Geometry.Point(new Point3d(ptf)));
+                else if (val is Rhino.Geometry.Point rPt && rPt.IsValid)
+                    result.Add(rPt);
+                else if (val is Line ln && ln.IsValid)
+                    result.Add(new LineCurve(ln));
+                else if (val is Polyline pl && pl.IsValid && pl.Count >= 2)
+                    result.Add(new PolylineCurve(pl));
+                else if (val is Circle circ && circ.IsValid)
+                    result.Add(new ArcCurve(circ));
+                else if (val is Arc arc && arc.IsValid)
+                    result.Add(new ArcCurve(arc));
+                else if (val is Rectangle3d rect && rect.IsValid)
+                    result.Add(rect.ToNurbsCurve());
+                else if (val is Box box && box.IsValid)
+                {
+                    Mesh bm = Mesh.CreateFromBox(box, 2, 2, 2);
+                    if (bm != null) result.Add(bm);
+                }
+                else if (val is GeometryBase gb && gb.IsValid)
+                    result.Add(gb);
+            }
+            return result;
+        }
+
         public static double[] ComputeExternalGeometryHeatDistance(
             DdgMesh mesh,
             IEnumerable<GeometryBase> externalGeometries,
@@ -2537,20 +2575,25 @@ namespace CraneGH.Core
         {
             int nV = mesh.VertexCount;
             var sourceInitialDist = new Dictionary<int, double>();
+            var sourceBaryWeight = new Dictionary<int, double>();
             resolvedSourcePoints = new List<Point3d>();
             var activeCurves = new List<Curve>();
             var closedMeshes = new List<Mesh>();
             var closedBreps = new List<Brep>();
 
             double h = mesh.MeanEdgeLength;
-            double snapTol = h * 1.45;
+            double snapTol = h * 1.35;
 
-            void AddOrUpdateSeed(int vIdx, double d0)
+            void AddBarycentricSeed(int vIdx, double d0, double baryWeight)
             {
-                if (vIdx < 0 || vIdx >= nV) return;
+                if (vIdx < 0 || vIdx >= nV || baryWeight <= 1e-6) return;
                 d0 = Math.Max(0.0, d0);
                 if (!sourceInitialDist.TryGetValue(vIdx, out double prev) || d0 < prev)
                     sourceInitialDist[vIdx] = d0;
+                if (sourceBaryWeight.TryGetValue(vIdx, out double wPrev))
+                    sourceBaryWeight[vIdx] = wPrev + baryWeight;
+                else
+                    sourceBaryWeight[vIdx] = baryWeight;
             }
 
             if (externalGeometries != null)
@@ -2561,59 +2604,71 @@ namespace CraneGH.Core
 
                     if (geom is Rhino.Geometry.Point ptGeom)
                     {
-                        int vIdx = mesh.FindClosestVertex(ptGeom.Location);
-                        AddOrUpdateSeed(vIdx, 0.0);
+                        Point3d loc = ptGeom.Location;
+                        MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(loc, 0.0);
+                        if (mp != null)
+                        {
+                            resolvedSourcePoints.Add(mp.Point);
+                            MeshFace mf = mesh.RhinoMesh.Faces[mp.FaceIndex];
+                            int[] corners = { mf.A, mf.B, mf.C };
+                            for (int k = 0; k < 3; k++)
+                            {
+                                int vi = corners[k];
+                                double w = Math.Max(0.05, mp.T[k]);
+                                double dSurf = mesh.Positions[vi].DistanceTo(mp.Point);
+                                AddBarycentricSeed(vi, dSurf, w * 4.0);
+                            }
+                        }
+                        int vClosest = mesh.FindClosestVertex(loc);
+                        AddBarycentricSeed(vClosest, 0.0, 4.0);
+                    }
+                    else if (geom is PointCloud pc && pc.Count > 0)
+                    {
+                        Point3d[] pts = pc.GetPoints();
+                        int stride = Math.Max(1, pts.Length / 200);
+                        for (int k = 0; k < pts.Length; k += stride)
+                        {
+                            int vIdx = mesh.FindClosestVertex(pts[k]);
+                            AddBarycentricSeed(vIdx, 0.0, 2.0);
+                            resolvedSourcePoints.Add(mesh.Positions[vIdx]);
+                        }
                     }
                     else if (geom is Curve crv && crv.IsValid)
                     {
                         activeCurves.Add(crv);
-                        // 1. Sample curve densely and snap closest mesh vertices with their exact sub-edge distance to the curve
-                        int sampleCount = Math.Max(48, (int)(crv.GetLength() / Math.Max(1e-4, 0.35 * h)));
-                        sampleCount = Math.Min(600, sampleCount);
+                        // Sample curve densely at 0.25*h and project each point onto the mesh surface via ClosestMeshPoint
+                        // so off-surface floating curves never inject 3D normal-offset noise!
+                        int sampleCount = Math.Max(64, (int)(crv.GetLength() / Math.Max(1e-4, 0.25 * h)));
+                        sampleCount = Math.Min(800, sampleCount);
                         crv.DivideByCount(sampleCount, true, out Point3d[] crvPts);
-                        if (crvPts != null)
+                        if (crvPts != null && crvPts.Length > 0)
                         {
-                            foreach (Point3d cp in crvPts)
+                            double segWeight = 1.0 / Math.Max(1, crvPts.Length);
+                            int visStride = Math.Max(1, crvPts.Length / 80);
+                            for (int s = 0; s < crvPts.Length; s++)
                             {
-                                MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(cp, snapTol * 2.0);
+                                Point3d cp = crvPts[s];
+                                MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(cp, 0.0);
                                 if (mp != null)
                                 {
+                                    if (s % visStride == 0)
+                                        resolvedSourcePoints.Add(mp.Point);
                                     MeshFace mf = mesh.RhinoMesh.Faces[mp.FaceIndex];
                                     int[] corners = { mf.A, mf.B, mf.C };
-                                    foreach (int vi in corners)
+                                    for (int k = 0; k < 3; k++)
                                     {
-                                        double dToCrv = mesh.Positions[vi].DistanceTo(cp);
-                                        if (crv.ClosestPoint(mesh.Positions[vi], out double tc))
-                                            dToCrv = Math.Min(dToCrv, mesh.Positions[vi].DistanceTo(crv.PointAt(tc)));
-                                        AddOrUpdateSeed(vi, dToCrv);
+                                        int vi = corners[k];
+                                        double baryW = Math.Max(0.02, mp.T[k]);
+                                        // Surface-projected distance from triangle corner vi to projected curve point mp.Point!
+                                        double dSurf = mesh.Positions[vi].DistanceTo(mp.Point);
+                                        AddBarycentricSeed(vi, dSurf, baryW * (1.0 + sampleCount * segWeight));
                                     }
                                 }
                                 else
                                 {
                                     int vIdx = mesh.FindClosestVertex(cp);
-                                    AddOrUpdateSeed(vIdx, 0.0);
+                                    AddBarycentricSeed(vIdx, 0.0, 1.0);
                                 }
-                            }
-                        }
-
-                        // 2. Include all mesh vertices within snapTol of the curve with their exact distance to the curve
-                        for (int i = 0; i < nV; i++)
-                        {
-                            if (crv.ClosestPoint(mesh.Positions[i], out double tParam, snapTol))
-                            {
-                                double dExact = mesh.Positions[i].DistanceTo(crv.PointAt(tParam));
-                                AddOrUpdateSeed(i, dExact);
-                            }
-                        }
-
-                        // 3. Ensure at least the closest vertex to the curve has d0 = 0.0 so minimum distance on the curve is 0.0
-                        if (crvPts != null && crvPts.Length > 0)
-                        {
-                            foreach (Point3d cp in crvPts)
-                            {
-                                int vClosest = mesh.FindClosestVertex(cp);
-                                if (mesh.Positions[vClosest].DistanceTo(cp) <= 0.85 * h)
-                                    AddOrUpdateSeed(vClosest, 0.0);
                             }
                         }
                     }
@@ -2625,13 +2680,13 @@ namespace CraneGH.Core
                             Point3d cp = extMesh.ClosestPoint(mesh.Positions[i]);
                             double d = cp.DistanceTo(mesh.Positions[i]);
                             if (d <= snapTol * 1.5)
-                                AddOrUpdateSeed(i, d <= 0.65 * h ? 0.0 : d);
+                                AddBarycentricSeed(i, d <= 0.65 * h ? 0.0 : d, 1.5);
                         }
                         if (sourceInitialDist.Count == 0)
                         {
                             int stride = Math.Max(1, extMesh.Vertices.Count / 80);
                             for (int k = 0; k < extMesh.Vertices.Count; k += stride)
-                                AddOrUpdateSeed(mesh.FindClosestVertex(extMesh.Vertices.Point3dAt(k)), 0.0);
+                                AddBarycentricSeed(mesh.FindClosestVertex(extMesh.Vertices.Point3dAt(k)), 0.0, 1.5);
                         }
                     }
                     else if (geom is Brep brep && brep.IsValid)
@@ -2642,19 +2697,19 @@ namespace CraneGH.Core
                             Point3d cp = brep.ClosestPoint(mesh.Positions[i]);
                             double d = cp.DistanceTo(mesh.Positions[i]);
                             if (d <= snapTol * 1.5)
-                                AddOrUpdateSeed(i, d <= 0.65 * h ? 0.0 : d);
+                                AddBarycentricSeed(i, d <= 0.65 * h ? 0.0 : d, 1.5);
                         }
                         if (sourceInitialDist.Count == 0 && brep.Vertices.Count > 0)
                         {
                             foreach (var bv in brep.Vertices)
-                                AddOrUpdateSeed(mesh.FindClosestVertex(bv.Location), 0.0);
+                                AddBarycentricSeed(mesh.FindClosestVertex(bv.Location), 0.0, 1.5);
                         }
                     }
                     else
                     {
                         BoundingBox gb = geom.GetBoundingBox(false);
                         if (gb.IsValid)
-                            AddOrUpdateSeed(mesh.FindClosestVertex(gb.Center), 0.0);
+                            AddBarycentricSeed(mesh.FindClosestVertex(gb.Center), 0.0, 2.0);
                     }
                 }
             }
@@ -2665,10 +2720,16 @@ namespace CraneGH.Core
                 for (int i = 0; i < nV; i++)
                 {
                     if (mesh.VertexOnBoundary[i])
-                        AddOrUpdateSeed(i, 0.0);
+                    {
+                        AddBarycentricSeed(i, 0.0, 2.0);
+                        resolvedSourcePoints.Add(mesh.Positions[i]);
+                    }
                 }
                 if (sourceInitialDist.Count == 0 && nV > 0)
-                    AddOrUpdateSeed(0, 0.0);
+                {
+                    AddBarycentricSeed(0, 0.0, 4.0);
+                    resolvedSourcePoints.Add(mesh.Positions[0]);
+                }
             }
             else
             {
@@ -2686,24 +2747,23 @@ namespace CraneGH.Core
 
             var srcVertList = new List<int>(sourceInitialDist.Count);
             var srcDistList = new List<double>(sourceInitialDist.Count);
+            var srcWeightList = new List<double>(sourceInitialDist.Count);
             foreach (var kv in sourceInitialDist)
             {
                 srcVertList.Add(kv.Key);
                 srcDistList.Add(kv.Value);
-                if (kv.Value <= 0.65 * h)
+                sourceBaryWeight.TryGetValue(kv.Key, out double bw);
+                srcWeightList.Add(Math.Max(0.1, bw));
+                if (resolvedSourcePoints.Count == 0 && kv.Value <= 0.65 * h)
                     resolvedSourcePoints.Add(mesh.Positions[kv.Key]);
-            }
-            if (resolvedSourcePoints.Count == 0)
-            {
-                foreach (int vIdx in srcVertList)
-                    resolvedSourcePoints.Add(mesh.Positions[vIdx]);
             }
 
             double[] dist = ComputeHeatDistance(
                 mesh, srcVertList, timeFactor,
                 out Vector3d[] rawFaceGrad,
                 out Vector3d[] rawVertGrad,
-                srcDistList);
+                srcDistList,
+                srcWeightList);
 
             // Find the Farthest Point on the mesh from the source curve / naked boundary
             int farthestIdx = 0;
@@ -2719,17 +2779,17 @@ namespace CraneGH.Core
             farthestPoint = nV > 0 ? mesh.Positions[farthestIdx] : Point3d.Origin;
 
             // Compute Signed Geodesic Distance (The Signed Heat Method, Feng & Crane SIGGRAPH 2024):
-            // If curves are provided on the mesh, use Surface Winding Number w in [0, 1] around the oriented curves
-            // so one side of the curve is +d(v), the other side is -d(v), and the curve is the exact 0-level set!
+            // Use smooth hyperbolic tangent transition across the Surface Winding Number w = 0.5 zero-level set
+            // so Signed Distance has zero staircase step noise on triangles straddling the curve!
             signedGeodesicDistance = new double[nV];
             if (activeCurves.Count > 0)
             {
                 double[] winding = ComputeSurfaceWindingNumberAndTrim(mesh, activeCurves, out _, out _, out _);
                 for (int i = 0; i < nV; i++)
                 {
-                    // Smooth sign transition across the curve zero-level set
-                    double sgn = winding[i] >= 0.5 ? 1.0 : -1.0;
-                    signedGeodesicDistance[i] = sgn * dist[i];
+                    double smoothSign = Math.Tanh((winding[i] - 0.5) * 10.0);
+                    if (Math.Abs(smoothSign) > 0.92) smoothSign = smoothSign >= 0.0 ? 1.0 : -1.0;
+                    signedGeodesicDistance[i] = smoothSign * dist[i];
                 }
             }
             else if (closedMeshes.Count > 0 || closedBreps.Count > 0)
@@ -2755,7 +2815,6 @@ namespace CraneGH.Core
 
             // Smooth & redistribute the scalar gradient via Connection Laplacian so gradient flow is clean and evenly distributed
             smoothVertexGradients = SmoothNRoSyVectorField(mesh, rawVertGrad, Math.Max(0.6, timeFactor), 1, out smoothFaceGradients, out _, out _);
-            // Ensure gradient direction aligns positively with increasing distance d (pointing toward farthest point)
             for (int i = 0; i < nV; i++)
             {
                 if ((smoothVertexGradients[i] * rawVertGrad[i]) < 0.0)
@@ -6996,6 +7055,32 @@ namespace CraneGH.Core
                 faceSdf[f] = (vertexSdfField[fv[0]] + vertexSdfField[fv[1]] + vertexSdfField[fv[2]]) / 3.0;
             }
 
+            // If clusterCountK <= 0 (Automatic Geometry-Driven Mode): discover optimal K from SDF histogram peaks & sharp creases!
+            if (clusterCountK <= 0)
+            {
+                int nBins = 16;
+                double[] hist = new double[nBins];
+                for (int f = 0; f < nF; f++)
+                {
+                    int b = Math.Max(0, Math.Min(nBins - 1, (int)(faceSdf[f] * nBins)));
+                    hist[b] += mesh.FaceAreas[f];
+                }
+                int peaks = 0;
+                for (int b = 0; b < nBins; b++)
+                {
+                    double prev = b > 0 ? hist[b - 1] : 0.0;
+                    double next = b < nBins - 1 ? hist[b + 1] : 0.0;
+                    if (hist[b] >= prev && hist[b] >= next && hist[b] > 0.04 * (nF * mesh.MeanEdgeLength * mesh.MeanEdgeLength))
+                        peaks++;
+                }
+                int creaseCount = 0;
+                foreach (var e in mesh.Edges)
+                    if (e.HalfEdge1 != -1 && (e.DihedralAngle >= 0.40 || e.SignedDihedralAngle < -0.18))
+                        creaseCount++;
+                int creaseBonus = Math.Min(5, (int)Math.Round(creaseCount / Math.Max(12.0, Math.Sqrt(nF) * 1.5)));
+                K = Math.Max(2, Math.Min(12, Math.Max(peaks, 2) + creaseBonus));
+            }
+
             // 2. Build Dual Face Adjacency Graph with CGAL Log-Dihedral Crease & Concavity Weights:
             //    In CGAL Surface_mesh_segmentation, concave dihedral angles and sharp creases have
             //    dramatically lower cut cost so graph-cut boundaries lock onto creases & concave necks!
@@ -7164,7 +7249,8 @@ namespace CraneGH.Core
         {
             int nV = mesh.VertexCount;
             int nF = mesh.FaceCount;
-            int K = Math.Max(2, Math.Min(nF, targetPartCountK));
+            bool autoStopByGeometry = targetPartCountK <= 0;
+            int K = autoStopByGeometry ? Math.Min(14, Math.Max(3, nF / 12)) : Math.Max(2, Math.Min(nF, targetPartCountK));
 
             // 1. Histogram-Equalized Dihedral Angle Distance H(f_i, f_j) in [0, 1] (Zhang & Liu VMV 2005 Section 3, Eq. 1):
             //    Emphasizes the cognitive Minima Rule: eta = 1.0 for concave dihedral angles & sharp creases, eta = 0.1 for smooth convex!
@@ -7400,6 +7486,12 @@ namespace CraneGH.Core
                     }
                 }
 
+                // Automatic stopping criterion from Liu & Zhang (Eurographics 2007 Section 4.3):
+                // If autoStopByGeometry is active and the best cut salience falls below threshold, stop splitting!
+                double salienceStopThreshold = 0.28 / Math.Max(0.35, Math.Min(3.0, concWeight * 0.45));
+                if (autoStopByGeometry && currentParts >= 2 && bestSalience < salienceStopThreshold)
+                    break;
+
                 int newLabel = currentParts;
                 for (int i = bestSplitIdx + 1; i < mSub; i++)
                     faceLabels[orderedSub[i].faceIdx] = newLabel;
@@ -7436,7 +7528,8 @@ namespace CraneGH.Core
         {
             int nV = mesh.VertexCount;
             int nF = mesh.FaceCount;
-            int targetK = Math.Max(2, Math.Min(nF, targetPatchCountK));
+            bool autoStopByGeometry = targetPatchCountK <= 0;
+            int targetK = autoStopByGeometry ? 2 : Math.Max(2, Math.Min(nF, targetPatchCountK));
 
             // 1. Sharp Features Detection (LIRIS-1815 Section 4.1):
             //    An edge shared by two triangles whose normal vectors make an angle >= sharpCreaseAngleDeg is a Sharp Edge!
@@ -7680,6 +7773,10 @@ namespace CraneGH.Core
                     }
 
                     if (bestA == -1 || bestB == -1) break;
+                    // Automatic stopping criterion from Lavoué et al. (LIRIS-1815 Section 4.4.2 & Table 1):
+                    // Stop merging when the smallest RAG distance exceeds the natural crease/curvature barrier!
+                    if (autoStopByGeometry && activeRegionCount <= 16 && bestDij > 1.35)
+                        break;
 
                     // Merge bestB into bestA proportionally to their areas (Section 4.4.2)
                     double newArea = regArea[bestA] + regArea[bestB];
@@ -7727,6 +7824,380 @@ namespace CraneGH.Core
             rectifiedBoundaries = ExtractLabelBoundaryCurves(mesh, regionId, rectifiedPos);
 
             return subMeshes;
+        }
+
+        // =========================================================================================
+        // 43. STANDARD AREA-NORMALIZED TEST MESH GENERATOR & SANDBOX BENCHMARK LOADER
+        // =========================================================================================
+        public static Mesh CreateAreaNormalizedTestMesh(
+            Mesh optionalCustomMesh,
+            int presetShape,
+            double targetSurfaceArea,
+            out Curve testCurveOnMesh,
+            out List<Point3d> testPointsOnMesh,
+            out double finalSurfaceArea)
+        {
+            double targetA = targetSurfaceArea > 1e-4 ? targetSurfaceArea : 1000.0;
+            Mesh m = null;
+
+            if (optionalCustomMesh != null && optionalCustomMesh.Vertices.Count >= 3 && optionalCustomMesh.Faces.Count >= 1)
+            {
+                m = optionalCustomMesh.DuplicateMesh();
+            }
+            else
+            {
+                m = BuildProceduralPresetTestMesh(presetShape);
+            }
+
+            m.Faces.ConvertQuadsToTriangles();
+            m.Normals.ComputeNormals();
+
+            // Compute current surface area and centroid
+            double curArea = 0.0;
+            Point3d areaCentroid = Point3d.Origin;
+            for (int f = 0; f < m.Faces.Count; f++)
+            {
+                MeshFace mf = m.Faces[f];
+                Point3d pA = m.Vertices.Point3dAt(mf.A);
+                Point3d pB = m.Vertices.Point3dAt(mf.B);
+                Point3d pC = m.Vertices.Point3dAt(mf.C);
+                double triA = 0.5 * Vector3d.CrossProduct(pB - pA, pC - pA).Length;
+                curArea += triA;
+                areaCentroid += triA * ((pA + pB + pC) / 3.0);
+            }
+
+            if (curArea > 1e-12)
+                areaCentroid /= curArea;
+            else
+                areaCentroid = m.GetBoundingBox(false).Center;
+
+            // Uniform scale factor s = sqrt(targetA / curArea) so total surface area is EXACTLY targetA!
+            double scale = curArea > 1e-12 ? Math.Sqrt(targetA / curArea) : 1.0;
+            for (int i = 0; i < m.Vertices.Count; i++)
+            {
+                Point3d p = Point3d.Origin + (m.Vertices.Point3dAt(i) - areaCentroid) * scale;
+                m.Vertices.SetVertex(i, p);
+            }
+            m.Normals.ComputeNormals();
+            finalSurfaceArea = targetA;
+
+            // Generate a smooth test curve and 2 test points directly on the normalized mesh surface
+            BoundingBox bb = m.GetBoundingBox(false);
+            var curvePts = new List<Point3d>();
+            int nSamples = 36;
+            double rx = 0.28 * (bb.Max.X - bb.Min.X);
+            double ry = 0.28 * (bb.Max.Y - bb.Min.Y);
+
+            for (int k = 0; k < nSamples; k++)
+            {
+                double t = k / (double)(nSamples - 1);
+                double ang = -0.75 * Math.PI + t * 1.5 * Math.PI;
+                Point3d probe = new Point3d(
+                    rx * Math.Cos(ang),
+                    ry * Math.Sin(ang),
+                    bb.Center.Z + 0.15 * (bb.Max.Z - bb.Min.Z) * Math.Sin(2.0 * ang));
+                MeshPoint mp = m.ClosestMeshPoint(probe, 0.0);
+                if (mp != null)
+                    curvePts.Add(mp.Point);
+            }
+
+            testCurveOnMesh = curvePts.Count >= 4
+                ? Curve.CreateInterpolatedCurve(curvePts, 3, CurveKnotStyle.Chord)
+                : new LineCurve(bb.Min, bb.Max);
+
+            testPointsOnMesh = new List<Point3d>();
+            MeshPoint mpA = m.ClosestMeshPoint(new Point3d(bb.Min.X * 0.65, bb.Min.Y * 0.65, bb.Center.Z), 0.0);
+            MeshPoint mpB = m.ClosestMeshPoint(new Point3d(bb.Max.X * 0.65, bb.Max.Y * 0.65, bb.Center.Z), 0.0);
+            testPointsOnMesh.Add(mpA != null ? mpA.Point : m.Vertices.Point3dAt(0));
+            testPointsOnMesh.Add(mpB != null ? mpB.Point : m.Vertices.Point3dAt(m.Vertices.Count - 1));
+
+            return m;
+        }
+
+        private static Mesh BuildProceduralPresetTestMesh(int preset)
+        {
+            var m = new Mesh();
+            int mode = Math.Max(0, preset % 4);
+
+            if (mode == 0)
+            {
+                // Preset 0: Doubly-Curved Saddle-Dome with Sharp Crease Ridge & Naked Boundary
+                int nx = 34, ny = 34;
+                for (int iy = 0; iy <= ny; iy++)
+                {
+                    double v = -1.0 + 2.0 * iy / ny;
+                    for (int ix = 0; ix <= nx; ix++)
+                    {
+                        double u = -1.0 + 2.0 * ix / nx;
+                        double r2 = u * u + v * v;
+                        // Smooth dome + saddle modulation + sharp crease ridge at u = 0.25
+                        double dome = 0.45 * Math.Exp(-1.8 * r2) * Math.Cos(1.6 * u) * Math.Cos(1.4 * v);
+                        double crease = -0.18 * Math.Abs(u - 0.22 * Math.Sin(1.5 * v));
+                        double z = dome + crease + 0.12 * (u * u - v * v);
+                        m.Vertices.Add(u * 10.0, v * 10.0, z * 10.0);
+                    }
+                }
+                for (int iy = 0; iy < ny; iy++)
+                {
+                    for (int ix = 0; ix < nx; ix++)
+                    {
+                        int a = iy * (nx + 1) + ix;
+                        int b = a + 1;
+                        int c = a + (nx + 1) + 1;
+                        int d = a + (nx + 1);
+                        m.Faces.AddFace(a, b, c);
+                        m.Faces.AddFace(a, c, d);
+                    }
+                }
+            }
+            else if (mode == 1)
+            {
+                // Preset 1: 3-Lobe Organic Branching Surface (for Salient Spectral & CGAL SDF segmentation)
+                int nTheta = 44, nPhi = 26;
+                for (int ip = 0; ip <= nPhi; ip++)
+                {
+                    double phi = Math.PI * (0.04 + 0.92 * ip / nPhi);
+                    double sinP = Math.Sin(phi), cosP = Math.Cos(phi);
+                    for (int it = 0; it < nTheta; it++)
+                    {
+                        double theta = 2.0 * Math.PI * it / nTheta;
+                        double lobe = 1.0 + 0.42 * Math.Cos(3.0 * theta) * Math.Pow(sinP, 1.5) + 0.18 * Math.Cos(2.0 * phi);
+                        double x = lobe * sinP * Math.Cos(theta) * 10.0;
+                        double y = lobe * sinP * Math.Sin(theta) * 10.0;
+                        double z = (1.15 * cosP + 0.15 * Math.Sin(3.0 * theta) * sinP) * 10.0;
+                        m.Vertices.Add(x, y, z);
+                    }
+                }
+                for (int ip = 0; ip < nPhi; ip++)
+                {
+                    for (int it = 0; it < nTheta; it++)
+                    {
+                        int nextIt = (it + 1) % nTheta;
+                        int a = ip * nTheta + it;
+                        int b = ip * nTheta + nextIt;
+                        int c = (ip + 1) * nTheta + nextIt;
+                        int d = (ip + 1) * nTheta + it;
+                        m.Faces.AddFace(a, b, c);
+                        m.Faces.AddFace(a, c, d);
+                    }
+                }
+            }
+            else if (mode == 2)
+            {
+                // Preset 2: Mechanical CAD Fandisk-like Crease & Fillet Part (for TensorRectSeg & MultiMold)
+                int nx = 32, ny = 32;
+                for (int iy = 0; iy <= ny; iy++)
+                {
+                    double v = -1.0 + 2.0 * iy / ny;
+                    for (int ix = 0; ix <= nx; ix++)
+                    {
+                        double u = -1.0 + 2.0 * ix / nx;
+                        double z;
+                        if (u < -0.25)
+                            z = 0.35; // Flat top plateau
+                        else if (u < 0.25)
+                            z = 0.35 - 0.90 * (u + 0.25); // Sharp angled ramp with sharp creases at u=-0.25 and u=+0.25
+                        else
+                            z = -0.10 + 0.28 * Math.Sqrt(Math.Max(0.0, 1.0 - v * v)); // Cylindrical curved boss
+
+                        if (Math.Abs(v) > 0.65)
+                            z -= 0.45 * (Math.Abs(v) - 0.65); // Sharp sidechamfer walls
+                        m.Vertices.Add(u * 10.0, v * 10.0, z * 10.0);
+                    }
+                }
+                for (int iy = 0; iy < ny; iy++)
+                {
+                    for (int ix = 0; ix < nx; ix++)
+                    {
+                        int a = iy * (nx + 1) + ix;
+                        int b = a + 1;
+                        int c = a + (nx + 1) + 1;
+                        int d = a + (nx + 1);
+                        m.Faces.AddFace(a, b, c);
+                        m.Faces.AddFace(a, c, d);
+                    }
+                }
+            }
+            else
+            {
+                // Preset 3: Genus-1 Variable-Thickness Torus
+                int nu = 44, nv = 22;
+                double R = 10.0;
+                for (int iu = 0; iu < nu; iu++)
+                {
+                    double u = 2.0 * Math.PI * iu / nu;
+                    double rTube = 3.8 * (1.0 + 0.28 * Math.Cos(2.0 * u));
+                    for (int iv = 0; iv < nv; iv++)
+                    {
+                        double v = 2.0 * Math.PI * iv / nv;
+                        double x = (R + rTube * Math.Cos(v)) * Math.Cos(u);
+                        double y = (R + rTube * Math.Cos(v)) * Math.Sin(u);
+                        double z = rTube * Math.Sin(v);
+                        m.Vertices.Add(x, y, z);
+                    }
+                }
+                for (int iu = 0; iu < nu; iu++)
+                {
+                    int nextU = (iu + 1) % nu;
+                    for (int iv = 0; iv < nv; iv++)
+                    {
+                        int nextV = (iv + 1) % nv;
+                        int a = iu * nv + iv;
+                        int b = nextU * nv + iv;
+                        int c = nextU * nv + nextV;
+                        int d = iu * nv + nextV;
+                        m.Faces.AddFace(a, b, c);
+                        m.Faces.AddFace(a, c, d);
+                    }
+                }
+            }
+
+            m.Normals.ComputeNormals();
+            return m;
+        }
+
+        // =========================================================================================
+        // 44. MESH ANALYZERS (Quality/Area/Topology, Crease/Concavity/Anisotropy, Mold Draft/Undercut)
+        // =========================================================================================
+        public static double[] ComputeMeshQualityAndTopologyAnalysis(
+            DdgMesh mesh,
+            int analysisMode, // 0 = Dual Area, 1 = Triangle Aspect Quality, 2 = Max Dihedral Crease (Deg), 3 = Vertex Valence
+            out double totalSurfaceArea,
+            out Interval edgeLengthDomain,
+            out string topologyReport,
+            out Mesh coloredAnalysisMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            totalSurfaceArea = 0.0;
+            for (int f = 0; f < nF; f++)
+                totalSurfaceArea += mesh.FaceAreas[f];
+
+            double minE = double.MaxValue, maxE = double.MinValue;
+            int nakedEdges = 0, sharpEdges = 0;
+            foreach (var e in mesh.Edges)
+            {
+                if (e.Length < minE) minE = e.Length;
+                if (e.Length > maxE) maxE = e.Length;
+                if (e.IsBoundary) nakedEdges++;
+                else if (e.DihedralAngle >= (25.0 * Math.PI / 180.0)) sharpEdges++;
+            }
+            if (minE > maxE) { minE = 0.0; maxE = 0.0; }
+            edgeLengthDomain = new Interval(minE, maxE);
+
+            int eulerChi = nV - mesh.EdgeCount + nF;
+            topologyReport = $"Vertices: {nV} | Faces: {nF} | Edges: {mesh.EdgeCount} | Area: {totalSurfaceArea:0.##} | Naked Edges: {nakedEdges} | Sharp Creases (>=25°): {sharpEdges} | Shells: {mesh.ConnectedComponentCount} | Euler Chi: {eulerChi}";
+
+            double[] metric = new double[nV];
+            if (analysisMode == 1)
+            {
+                // Triangle Aspect Ratio Quality in [0..1] (1 = equilateral, 0 = degenerate sliver)
+                double[] faceQ = new double[nF];
+                for (int f = 0; f < nF; f++)
+                {
+                    int[] fv = mesh.Faces[f];
+                    double a = mesh.Positions[fv[0]].DistanceTo(mesh.Positions[fv[1]]);
+                    double b = mesh.Positions[fv[1]].DistanceTo(mesh.Positions[fv[2]]);
+                    double c = mesh.Positions[fv[2]].DistanceTo(mesh.Positions[fv[0]]);
+                    double s = 0.5 * (a + b + c);
+                    double area = mesh.FaceAreas[f];
+                    double inRadius = s > 1e-12 ? area / s : 0.0;
+                    double circumRadius = (4.0 * area) > 1e-12 ? (a * b * c) / (4.0 * area) : 1.0;
+                    faceQ[f] = Math.Max(0.0, Math.Min(1.0, 2.0 * inRadius / Math.Max(1e-12, circumRadius)));
+                }
+                metric = mesh.MapScalarInputToVertices(faceQ);
+            }
+            else if (analysisMode == 2)
+            {
+                // Max Dihedral Crease Angle in Degrees
+                for (int i = 0; i < nV; i++)
+                    metric[i] = mesh.VertexSharpness[i] * (180.0 / Math.PI);
+            }
+            else if (analysisMode == 3)
+            {
+                // Vertex Valence
+                for (int i = 0; i < nV; i++)
+                    metric[i] = mesh.VertexOutgoingHalfEdges[i].Count;
+            }
+            else
+            {
+                // Dual Vertex Area
+                Array.Copy(mesh.DualAreas, metric, nV);
+            }
+
+            coloredAnalysisMesh = ColorMeshByPalette(mesh.RhinoMesh, metric, analysisMode == 1 ? 2 : 0);
+            return metric;
+        }
+
+        public static double[] ComputeMeshCreaseAndConcavityAnalysis(
+            DdgMesh mesh,
+            double creaseThresholdDeg,
+            out double[] creaseSalienceField,
+            out double[] curvatureAnisotropyTau,
+            out Mesh coloredAnalysisMesh)
+        {
+            int nV = mesh.VertexCount;
+            double[] signedDihedralDeg = new double[nV];
+            creaseSalienceField = new double[nV];
+            curvatureAnisotropyTau = new double[nV];
+
+            double threshRad = Math.Max(1.0, creaseThresholdDeg) * (Math.PI / 180.0);
+
+            for (int v = 0; v < nV; v++)
+            {
+                double maxAbsAngle = 0.0;
+                double signedAngle = 0.0;
+                foreach (int heIdx in mesh.VertexOutgoingHalfEdges[v])
+                {
+                    var e = mesh.Edges[mesh.HalfEdges[heIdx].EdgeIndex];
+                    if (e.IsBoundary) continue;
+                    if (e.DihedralAngle > maxAbsAngle)
+                    {
+                        maxAbsAngle = e.DihedralAngle;
+                        signedAngle = e.SignedDihedralAngle;
+                    }
+                }
+                signedDihedralDeg[v] = signedAngle * (180.0 / Math.PI);
+                creaseSalienceField[v] = Math.Min(1.0, maxAbsAngle / threshRad);
+
+                // Bommes, Zimmer, Kobbelt (SIGGRAPH 2009 Section 3) Relative Curvature Anisotropy tau in [0, 1]
+                double H = mesh.MeanCurvature[v];
+                double K = mesh.GaussianCurvature[v] / Math.Max(1e-12, mesh.DualAreas[v]);
+                double root = Math.Sqrt(Math.Max(0.0, H * H - K));
+                double kMax = Math.Max(Math.Abs(H + root), Math.Abs(H - root));
+                double kMin = Math.Min(Math.Abs(H + root), Math.Abs(H - root));
+                curvatureAnisotropyTau[v] = kMax > 1e-9 ? Math.Max(0.0, Math.Min(1.0, (kMax - kMin) / kMax)) : 0.0;
+            }
+
+            double maxBound = Math.Max(15.0, creaseThresholdDeg * 1.5);
+            coloredAnalysisMesh = ColorMeshByPalette(mesh.RhinoMesh, signedDihedralDeg, 1, -maxBound, maxBound);
+            return signedDihedralDeg;
+        }
+
+        public static double[] ComputeMeshDraftAndUndercutAnalysis(
+            DdgMesh mesh,
+            Vector3d pullDirection,
+            out double[] undercutSeverity,
+            out Mesh coloredDraftMesh)
+        {
+            int nV = mesh.VertexCount;
+            Vector3d dir = pullDirection;
+            if (!dir.Unitize()) dir = Vector3d.ZAxis;
+
+            double[] draftAnglesDeg = new double[nV];
+            undercutSeverity = new double[nV];
+
+            for (int v = 0; v < nV; v++)
+            {
+                double dot = Math.Max(-1.0, Math.Min(1.0, mesh.VertexNormals[v] * dir));
+                double deg = Math.Asin(dot) * (180.0 / Math.PI);
+                draftAnglesDeg[v] = deg;
+                // Undercut severity: 0 when draft >= +3 deg, ramps to 1.0 when draft <= -15 deg
+                undercutSeverity[v] = Math.Max(0.0, Math.Min(1.0, (3.0 - deg) / 18.0));
+            }
+
+            coloredDraftMesh = ColorMeshByPalette(mesh.RhinoMesh, draftAnglesDeg, 1, -45.0, 45.0);
+            return draftAnglesDeg;
         }
     }
 }

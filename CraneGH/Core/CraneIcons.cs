@@ -43,6 +43,10 @@ namespace CraneGH.Core
                     case "GradView": DrawGradView(g); break;
                     case "VecView": DrawVecView(g); break;
                     case "CrossView": DrawCrossView(g); break;
+                    case "TestMesh": DrawTestMesh(g); break;
+                    case "MeshAnalyze": DrawMeshAnalyze(g); break;
+                    case "CreaseAnalyze": DrawCreaseAnalyze(g); break;
+                    case "DraftAnalyze": DrawDraftAnalyze(g); break;
 
                     // 02. Scalar & Geodesics
                     case "Curvatures": DrawCurvatures(g); break;
@@ -852,6 +856,63 @@ namespace CraneGH.Core
                 g.DrawLine(creasePen, 12, 13, 12, 20);
                 g.DrawPolygon(creasePen, new PointF[] { new PointF(4, 10), new PointF(12, 4), new PointF(20, 10), new PointF(20, 17), new PointF(12, 20), new PointF(4, 17) });
             }
+        }
+
+        // TestMesh: Area-Normalized Standard Test Mesh Dome + Golden Test Curve
+        private static void DrawTestMesh(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(24, 44, 66), Color.FromArgb(14, 26, 42));
+            using (var meshPen = new Pen(Color.FromArgb(140, 0, 225, 255), 1.1f))
+            {
+                g.DrawEllipse(meshPen, 4.5f, 6.5f, 15f, 11f);
+                g.DrawArc(meshPen, 4.5f, 4.5f, 15f, 14f, 180, 180);
+                g.DrawLine(meshPen, 12f, 4.5f, 12f, 17.5f);
+                g.DrawLine(meshPen, 4.5f, 12f, 19.5f, 12f);
+            }
+            using (var crvPen = new Pen(Color.Gold, 2.2f))
+                g.DrawBezier(crvPen, new PointF(5.5f, 14f), new PointF(10f, 7f), new PointF(14f, 16f), new PointF(18.5f, 9f));
+        }
+
+        // MeshAnalyze: False-Color Triangle Quality & Area Inspection Mesh
+        private static void DrawMeshAnalyze(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(30, 38, 54), Color.FromArgb(18, 22, 34));
+            using (var t1 = new SolidBrush(Color.FromArgb(0, 215, 175)))
+                g.FillPolygon(t1, new PointF[] { new PointF(5, 17), new PointF(12, 5), new PointF(12, 13) });
+            using (var t2 = new SolidBrush(Color.FromArgb(245, 185, 45)))
+                g.FillPolygon(t2, new PointF[] { new PointF(12, 5), new PointF(19, 17), new PointF(12, 13) });
+            using (var t3 = new SolidBrush(Color.FromArgb(65, 145, 235)))
+                g.FillPolygon(t3, new PointF[] { new PointF(5, 17), new PointF(12, 13), new PointF(19, 17) });
+            using (var wire = new Pen(Color.White, 1.3f))
+            {
+                g.DrawPolygon(wire, new PointF[] { new PointF(5, 17), new PointF(12, 5), new PointF(19, 17) });
+                g.DrawLine(wire, 12, 5, 12, 13);
+                g.DrawLine(wire, 5, 17, 12, 13);
+                g.DrawLine(wire, 19, 17, 12, 13);
+            }
+        }
+
+        // CreaseAnalyze: Concave Valley (Blue) vs Convex Crease Ridge (Red/Gold)
+        private static void DrawCreaseAnalyze(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(40, 85, 185), Color.FromArgb(225, 65, 55));
+            using (var ridgePen = new Pen(Color.Gold, 2.5f))
+                g.DrawLine(ridgePen, 4.5f, 18.5f, 19.5f, 5.5f);
+            using (var valPen = new Pen(Color.Cyan, 2.0f))
+                g.DrawLine(valPen, 5.5f, 6.5f, 18.5f, 17.5f);
+        }
+
+        // DraftAnalyze: Pull Direction Arrow + Green Safe Draft / Red Undercut Heatmap
+        private static void DrawDraftAnalyze(Graphics g)
+        {
+            using (var safeBrush = new SolidBrush(Color.FromArgb(45, 195, 125)))
+                g.FillPie(safeBrush, 1.5f, 1.5f, 21f, 21f, 180, 180);
+            using (var underBrush = new SolidBrush(Color.FromArgb(225, 60, 55)))
+                g.FillPie(underBrush, 1.5f, 1.5f, 21f, 21f, 0, 180);
+            using (var pullPen = new Pen(Color.White, 2.2f))
+                DrawArrow(g, pullPen, 12, 17, 12, 4);
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)

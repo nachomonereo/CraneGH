@@ -24,19 +24,20 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (supports Grafted multi-mesh trees)", GH_ParamAccess.item);
-            int idxG = pManager.AddGeometryParameter("Source Geometry", "G", "Curves, Points, Meshes, or Breps on/near the mesh (leave empty to compute geodesic distance from Naked Boundary Edges!)", GH_ParamAccess.list);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses built-in Area-Normalized Test Mesh with Area = 1000)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            int idxG = pManager.AddGenericParameter("Source Geometry", "G", "Points, Curves, Polylines, Lines, Circles, Meshes, or Breps on/near the mesh (leave empty to compute geodesic distance from Naked Boundary Edges!)", GH_ParamAccess.list);
             pManager[idxG].Optional = true;
             pManager.AddNumberParameter("Smooth Time", "t", "Heat diffusion & gradient smoothing multiplier (default = 1.0)", GH_ParamAccess.item, 1.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddNumberParameter("Distance", "d", "Exact unsigned Geodesic Distance per vertex (0.0 on the curve/naked edges up to the farthest vertex on the mesh)", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Distance", "d", "Exact unsigned Geodesic Distance per vertex (0.0 on the point/curve/naked edges up to the farthest vertex on the mesh)", GH_ParamAccess.list);
             pManager.AddVectorParameter("Smooth Gradient", "G", "Redistributed smooth unit geodesic gradient vector per vertex pointing along shortest geodesic paths", GH_ParamAccess.list);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Keenan Crane's Heat Method colormap (also embeds exact scalar field)", GH_ParamAccess.item);
             pManager.AddNumberParameter("Signed Distance", "SD", "Signed Geodesic Distance d_+- per vertex (The Signed Heat Method, Feng & Crane 2024: negative on one side of curve, 0 on curve, positive on other side)", GH_ParamAccess.list);
-            pManager.AddPointParameter("Farthest Point", "FP", "Vertex on the mesh at maximum geodesic distance from the source curve / naked edges", GH_ParamAccess.item);
+            pManager.AddPointParameter("Farthest Point", "FP", "Vertex on the mesh at maximum geodesic distance from the source point / curve / naked edges", GH_ParamAccess.item);
         }
 
         protected override void BeforeSolveInstance()
@@ -50,11 +51,18 @@ namespace CraneGH.Components
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Mesh m = null;
-            var geoms = new List<GeometryBase>();
+            var rawGeoms = new List<object>();
             double tFactor = 1.0;
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetDataList(1, geoms);
+            DA.GetData(0, ref m);
+            DA.GetDataList(1, rawGeoms);
             DA.GetData(2, ref tFactor);
+
+            if (m == null || m.Vertices.Count < 3)
+            {
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+            }
+
+            List<GeometryBase> geoms = DdgAlgorithms.ParseAnyGeometryInputs(rawGeoms);
 
             var ddg = new DdgMesh(m);
             double[] dist = DdgAlgorithms.ComputeExternalGeometryHeatDistance(

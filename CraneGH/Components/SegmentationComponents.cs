@@ -555,7 +555,7 @@ namespace CraneGH.Components
 
         public GH_CgalSdfCreaseSegmenter()
           : base("CGAL SDF & Crease Graph-Cut Segmenter", "SDFSeg",
-              "Segments a 3D mesh using the CGAL Shape Diameter Function (SDF) and Log-Likelihood Dihedral Crease Graph-Cut so boundaries snap onto sharp creases and concave necks.",
+              "Automatically segments a 3D mesh by its geometry using the CGAL Shape Diameter Function (SDF) thickness modes and Dihedral Crease Graph-Cut (no cluster count K needed).",
               "CraneGH", "04. Segmentation & Fabrication")
         {
         }
@@ -564,14 +564,14 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
-            pManager.AddIntegerParameter("Clusters", "K", "Number of SDF + Crease Graph-Cut segments", GH_ParamAccess.item, 5);
-            pManager.AddNumberParameter("Crease Weight", "C", "Dihedral crease & concavity snapping strength (higher locks cuts strictly onto sharp creases for mold pieces)", GH_ParamAccess.item, 3.5);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Crease Sensitivity", "C", "Dihedral crease & concavity snapping strength (the geometry automatically determines how many parts to segment)", GH_ParamAccess.item, 3.5);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented watertight mesh pieces", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented watertight mesh pieces discovered from the geometry", GH_ParamAccess.list);
             pManager.AddCurveParameter("Crease Seams", "BC", "Geodesically rectified boundary seam curves locked to creases", GH_ParamAccess.list);
             pManager.AddNumberParameter("SDF Scalar", "SDF", "Log-normalized Shape Diameter Function (volumetric thickness) per vertex", GH_ParamAccess.list);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by SDF Graph-Cut segment", GH_ParamAccess.item);
@@ -582,16 +582,16 @@ namespace CraneGH.Components
             if (DA.Iteration == 0) _seams.Clear();
 
             Mesh m = null;
-            int kClusters = 5;
             double creaseW = 3.5;
 
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetData(1, ref kClusters);
-            DA.GetData(2, ref creaseW);
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref creaseW);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 1, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
             List<Mesh> subMeshes = DdgAlgorithms.ComputeCgalSdfAndCreaseGraphCutSegmentation(
-                ddg, kClusters, creaseW,
+                ddg, 0, creaseW,
                 out List<Polyline> seams,
                 out double[] sdfField,
                 out Mesh coloredMesh);
@@ -623,7 +623,7 @@ namespace CraneGH.Components
 
         public GH_SalientSpectralSegmenter()
           : base("Salient Spectral & Concavity Segmenter", "SpectralSeg",
-              "Segments a 3D mesh via Recursive Salient Spectral Cuts, Concavity-Enhanced Geometric Laplacian M, and L-infinity CVT (Zhang & Liu VMV 2005 / Liu & Zhang EG 2007 / Hu & Zhang 2016).",
+              "Automatically segments a 3D mesh via Recursive Salient Spectral Cuts and Concavity Minima Rule, stopping automatically when parts are convex/unsegmentable (Zhang & Liu VMV 2005 / Liu & Zhang EG 2007).",
               "CraneGH", "04. Segmentation & Fabrication")
         {
         }
@@ -632,14 +632,14 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
-            pManager.AddIntegerParameter("Parts", "K", "Target number of salient parts", GH_ParamAccess.item, 5);
-            pManager.AddNumberParameter("Crease & Concavity", "C", "Concavity & crease cut strength (Minima Rule weight for salient cuts)", GH_ParamAccess.item, 3.0);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Crease & Concavity", "C", "Concavity & crease salience sensitivity (higher cuts deeper into concavities; stops automatically by geometry salience)", GH_ParamAccess.item, 3.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented salient mesh parts", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented salient mesh parts discovered automatically from the geometry", GH_ParamAccess.list);
             pManager.AddCurveParameter("Salient Cut Curves", "BC", "Optimal salient cut boundary curves along concavities and creases", GH_ParamAccess.list);
             pManager.AddNumberParameter("Spectral Field", "Z", "1D Nyström / Secondary Laplace Spectral embedding scalar per vertex", GH_ParamAccess.list);
             pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by salient spectral part", GH_ParamAccess.item);
@@ -650,16 +650,16 @@ namespace CraneGH.Components
             if (DA.Iteration == 0) _seams.Clear();
 
             Mesh m = null;
-            int kParts = 5;
             double concW = 3.0;
 
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetData(1, ref kParts);
-            DA.GetData(2, ref concW);
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref concW);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 1, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
             List<Mesh> subMeshes = DdgAlgorithms.ComputeSalientSpectralAndConcavitySegmentation(
-                ddg, kParts, concW,
+                ddg, 0, concW,
                 out List<Polyline> seams,
                 out double[] specField,
                 out Mesh coloredMesh);
@@ -692,7 +692,7 @@ namespace CraneGH.Components
 
         public GH_CurvatureTensorRectifiedSegmenter()
           : base("CAD Crease & Curvature Tensor Segmenter", "TensorRectSeg",
-              "Decomposes a mesh into constant-curvature and crease-bounded mold/CAD patches via Principal Curvature Tensor (Kmin, Kmax) Region Merging and Boundary Rectification (Lavoué, Dupont, Baskurt LIRIS-1815).",
+              "Automatically decomposes a mesh into constant-curvature and crease-bounded mold/CAD patches via Principal Curvature Tensor (Kmin, Kmax) Region Merging and Boundary Rectification (Lavoué, Dupont, Baskurt LIRIS-1815).",
               "CraneGH", "04. Segmentation & Fabrication")
         {
         }
@@ -701,9 +701,9 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input 3D mesh (CAD, mold, or organic surface)", GH_ParamAccess.item);
-            pManager.AddIntegerParameter("Patch Count", "K", "Target number of merged constant-curvature / crease-bounded patches", GH_ParamAccess.item, 6);
-            pManager.AddNumberParameter("Crease Angle (Deg)", "A", "Dihedral crease threshold angle in degrees for hard mold/CAD boundaries", GH_ParamAccess.item, 25.0);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input 3D mesh (if empty, uses Area-Normalized CAD Crease Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Crease Angle (Deg)", "A", "Dihedral crease threshold angle in degrees for hard mold/CAD boundaries (the geometry automatically determines the patches)", GH_ParamAccess.item, 25.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -723,16 +723,16 @@ namespace CraneGH.Components
             }
 
             Mesh m = null;
-            int kPatches = 6;
             double creaseDeg = 25.0;
 
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetData(1, ref kPatches);
-            DA.GetData(2, ref creaseDeg);
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref creaseDeg);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 2, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
             List<Mesh> subMeshes = DdgAlgorithms.ComputeCurvatureTensorRectifiedSegmentation(
-                ddg, kPatches, creaseDeg,
+                ddg, 0, creaseDeg,
                 out List<Polyline> rectSeams,
                 out List<Polyline> sharpCreases,
                 out Mesh coloredMesh);

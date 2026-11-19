@@ -16,11 +16,13 @@ namespace CraneGH.Core
             double timeFactor,
             out Vector3d[] normalizedFaceGradients,
             out Vector3d[] vertexGradients,
-            IList<double> optionalSourceInitialDistances = null)
+            IList<double> optionalSourceInitialDistances = null,
+            IList<double> optionalBarycentricSourceWeights = null)
         {
             int n = mesh.VertexCount;
             double h = mesh.MeanEdgeLength;
-            double t = Math.Max(1e-6, timeFactor) * h * h;
+            // Slightly larger default diffusion time (2.0 * h^2) eliminates triangle-level discretization noise on arbitrary curves
+            double t = Math.Max(1e-5, timeFactor) * 2.0 * h * h;
 
             var heatBuilder = mesh.BuildCotanLaplacianBuilder(t);
             for (int i = 0; i < n; i++)
@@ -28,9 +30,9 @@ namespace CraneGH.Core
 
             double[] rhs = new double[n];
             var activeSources = new List<int>();
-            var activeInitDist = new List<double>();
             bool[] isSource = new bool[n];
             double[] d0PerVertex = new double[n];
+            double[] srcWeightPerVertex = new double[n];
             bool[] compHasSource = new bool[mesh.ConnectedComponentCount];
 
             if (sourceVertices != null)
@@ -41,19 +43,25 @@ namespace CraneGH.Core
                     double initD = (optionalSourceInitialDistances != null && k < optionalSourceInitialDistances.Count)
                         ? Math.Max(0.0, optionalSourceInitialDistances[k])
                         : 0.0;
+                    double bWeight = (optionalBarycentricSourceWeights != null && k < optionalBarycentricSourceWeights.Count)
+                        ? Math.Max(1e-4, optionalBarycentricSourceWeights[k])
+                        : 1.0;
                     k++;
+
                     if (src >= 0 && src < n)
                     {
-                        if (!isSource[src] || initD < d0PerVertex[src])
+                        if (!isSource[src])
                         {
-                            if (!isSource[src])
-                            {
-                                isSource[src] = true;
-                                activeSources.Add(src);
-                            }
+                            isSource[src] = true;
+                            activeSources.Add(src);
                             d0PerVertex[src] = initD;
-                            compHasSource[mesh.VertexComponent[src]] = true;
                         }
+                        else if (initD < d0PerVertex[src])
+                        {
+                            d0PerVertex[src] = initD;
+                        }
+                        srcWeightPerVertex[src] += bWeight;
+                        compHasSource[mesh.VertexComponent[src]] = true;
                     }
                 }
             }
@@ -61,12 +69,14 @@ namespace CraneGH.Core
             {
                 isSource[0] = true;
                 d0PerVertex[0] = 0.0;
+                srcWeightPerVertex[0] = 1.0;
                 activeSources.Add(0);
                 compHasSource[mesh.VertexComponent[0]] = true;
             }
 
             // Multi-shell support (teapot.obj, suzanne.obj, beetle.obj):
             // Ensure every disconnected shell receives a bridge heat seed closest to the primary source!
+            double[] compBaseOffset = new double[mesh.ConnectedComponentCount];
             if (mesh.ConnectedComponentCount > 1 && activeSources.Count > 0)
             {
                 double[] bestDistSq = new double[mesh.ConnectedComponentCount];
@@ -104,7 +114,9 @@ namespace CraneGH.Core
                     {
                         int bv = bestVert[c];
                         isSource[bv] = true;
-                        d0PerVertex[bv] = d0PerVertex[bestRefSrc[c]] + Math.Sqrt(bestDistSq[c]);
+                        compBaseOffset[c] = d0PerVertex[bestRefSrc[c]] + Math.Sqrt(bestDistSq[c]);
+                        d0PerVertex[bv] = 0.0;
+                        srcWeightPerVertex[bv] = 1.0;
                         activeSources.Add(bv);
                         compHasSource[c] = true;
                     }
@@ -112,102 +124,97 @@ namespace CraneGH.Core
             }
 
             // 1. Compute Exact Multi-Source Geodesic Fast-Marching / Planar-Triangle Eikonal Distance dEik
-            //    so that distance from the source curve / naked boundary to the farthest vertex is 100% exact!
+            //    ONLY to calibrate physical Rhino distance scale per connected component (never mixed raw into phi!)
             double[] dEik = ComputeExactSurfaceGeodesicBaseline(mesh, activeSources, d0PerVertex);
 
-            // 2. Pin Dirichlet boundary condition u = exp(-d0 / h) on all source vertices so heat radiates
-            //    uniformly along the entire curve / naked boundary regardless of local triangle density!
+            // 2. Inject smooth barycentric Robin heat sources: (M + t*Lc + gamma*W_src) u = gamma*W_src
+            //    This avoids jagged staircase pinning on interior curves while keeping uniform temperature along the curve!
+            double robinStiff = 50.0;
             foreach (int sv in activeSources)
             {
-                heatBuilder.PinRow(sv, 1.0);
-                rhs[sv] = Math.Exp(-d0PerVertex[sv] / Math.Max(1e-6, h));
+                double w = robinStiff * mesh.DualAreas[sv] * srcWeightPerVertex[sv];
+                heatBuilder.Add(sv, sv, w);
+                rhs[sv] = w;
             }
 
             CsrMatrix heatMat = heatBuilder.Build();
             double[] u = SparseLinearSolver.SolvePCG(heatMat, rhs, 1200, 1e-8);
 
+            // 3. Compute normalized face gradients X = -grad(u) / ||grad(u)|| and apply 1 pass of
+            //    intrinsic face-adjacency smoothing to eliminate any skinny-triangle gradient jitter!
             mesh.ComputeGradient(u, out Vector3d[] gradU, out _);
-            mesh.ComputeGradient(dEik, out Vector3d[] gradEik, out _);
+            var rawFaceX = new Vector3d[mesh.FaceCount];
+            for (int f = 0; f < mesh.FaceCount; f++)
+            {
+                Vector3d g = -gradU[f];
+                if (g.Length > 1e-14)
+                    g.Unitize();
+                rawFaceX[f] = g;
+            }
 
             normalizedFaceGradients = new Vector3d[mesh.FaceCount];
             for (int f = 0; f < mesh.FaceCount; f++)
             {
-                Vector3d gHeat = -gradU[f];
-                Vector3d gEik = gradEik[f];
-                double lenHeat = gHeat.Length;
-                double lenEik = gEik.Length;
-
-                if (lenHeat > 1e-11 && lenEik > 1e-11)
+                Vector3d nf = mesh.FaceNormals[f];
+                Vector3d sum = rawFaceX[f] * 2.0;
+                for (int k = 0; k < 3; k++)
                 {
-                    gHeat /= lenHeat;
-                    gEik /= lenEik;
-                    // Blend smooth Heat direction with exact Eikonal wavefront direction
-                    Vector3d g = 0.72 * gHeat + 0.28 * gEik;
-                    if (g.Length > 1e-12) g.Unitize();
-                    else g = gEik;
-                    normalizedFaceGradients[f] = g;
+                    var he = mesh.HalfEdges[f * 3 + k];
+                    if (he.Twin != -1)
+                    {
+                        int nbF = mesh.HalfEdges[he.Twin].FaceIndex;
+                        Vector3d nbX = rawFaceX[nbF];
+                        nbX -= (nbX * nf) * nf;
+                        sum += nbX;
+                    }
                 }
-                else if (lenEik > 1e-12)
-                {
-                    normalizedFaceGradients[f] = gEik / lenEik;
-                }
-                else if (lenHeat > 1e-14)
-                {
-                    normalizedFaceGradients[f] = gHeat / lenHeat;
-                }
-                else
-                {
-                    normalizedFaceGradients[f] = Vector3d.Zero;
-                }
+                sum -= (sum * nf) * nf;
+                if (sum.Length > 1e-12) sum.Unitize();
+                else sum = rawFaceX[f];
+                normalizedFaceGradients[f] = sum;
             }
 
-            // 3. Solve Poisson equation L_c * phi = div(X) with DIRICHLET PINNING phi[sv] = d0PerVertex[sv]
-            //    along the ENTIRE source curve / naked boundary!
+            // 4. Solve Poisson equation L_c * phi = div(X) with soft barycentric Robin zero-anchoring on source vertices
+            //    so phi is 100% C^1 smooth everywhere without sawtooth pinning artifacts!
             double[] divX = mesh.ComputeIntegratedDivergence(normalizedFaceGradients);
             var lapBuilder = mesh.BuildCotanLaplacianBuilder(1.0);
+            double poissonAnchor = 25.0 / Math.Max(1e-8, h * h);
             foreach (int sv in activeSources)
             {
-                lapBuilder.PinRow(sv, 1.0);
-                divX[sv] = d0PerVertex[sv];
+                double wAnchor = poissonAnchor * mesh.DualAreas[sv] * srcWeightPerVertex[sv];
+                lapBuilder.Add(sv, sv, wAnchor);
+                divX[sv] += wAnchor * d0PerVertex[sv];
             }
             lapBuilder.ShiftDiagonal(1e-9);
             CsrMatrix lapMat = lapBuilder.Build();
 
             double[] phi = SparseLinearSolver.SolvePCG(lapMat, divX, 1500, 1e-8);
 
-            // 4. Calibrate and blend smooth Heat Poisson phi with exact Planar-Triangle Eikonal geodesic distance dEik
-            //    per connected component so phi = d0 on the curve/naked edges and matches the exact shortest geodesic path length!
-            double blendAlpha = Math.Max(0.15, Math.Min(0.85, 0.65 * Math.Sqrt(Math.Max(0.25, Math.Min(4.0, timeFactor)))));
+            // 5. Shift minimum per component to min(d0) and calibrate physical distance scale to match exact Eikonal max distance
+            //    WITHOUT blending piecewise-linear dEik noise into phi!
             for (int c = 0; c < mesh.ConnectedComponentCount; c++)
             {
-                double maxPhi = 0.0, maxEik = 0.0, minEik = double.MaxValue;
+                double minPhi = double.MaxValue, maxPhi = double.MinValue;
+                double minEik = double.MaxValue, maxEik = double.MinValue;
                 for (int i = 0; i < n; i++)
                 {
                     if (mesh.VertexComponent[i] != c) continue;
+                    if (phi[i] < minPhi) minPhi = phi[i];
+                    if (phi[i] > maxPhi) maxPhi = phi[i];
                     if (dEik[i] < minEik) minEik = dEik[i];
                     if (dEik[i] > maxEik) maxEik = dEik[i];
-                    if (phi[i] > maxPhi) maxPhi = phi[i];
                 }
+                if (minPhi == double.MaxValue) continue;
                 if (minEik == double.MaxValue) minEik = 0.0;
 
-                double spanPhi = maxPhi - minEik;
+                double spanPhi = maxPhi - minPhi;
                 double spanEik = maxEik - minEik;
                 double scale = (spanPhi > 1e-9 && spanEik > 1e-9) ? (spanEik / spanPhi) : 1.0;
-                // Clamp scale factor to reasonable physical range [0.5, 2.0]
-                scale = Math.Max(0.5, Math.Min(2.0, scale));
 
                 for (int i = 0; i < n; i++)
                 {
                     if (mesh.VertexComponent[i] != c) continue;
-                    if (isSource[i])
-                    {
-                        phi[i] = d0PerVertex[i];
-                    }
-                    else
-                    {
-                        double calPhi = minEik + Math.Max(0.0, phi[i] - minEik) * scale;
-                        phi[i] = blendAlpha * calPhi + (1.0 - blendAlpha) * dEik[i];
-                    }
+                    phi[i] = minEik + Math.Max(0.0, (phi[i] - minPhi) * scale) + compBaseOffset[c];
                 }
             }
 
