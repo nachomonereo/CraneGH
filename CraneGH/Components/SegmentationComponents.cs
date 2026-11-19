@@ -263,12 +263,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by K-Means cluster", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _clusterNormalArrows.Clear();
             _clusterCenters.Clear();
             _seams.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 2 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             int kCount = 6;
             double wN = 3.5;
@@ -436,10 +441,15 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by scalar band", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _seams.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _seams.Clear();
-
             Mesh m = null;
             var sList = new List<double>();
             var kVals = new List<double>();
@@ -537,5 +547,216 @@ namespace CraneGH.Components
         }
 
         public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000055");
+    }
+
+    public class GH_CgalSdfCreaseSegmenter : GH_Component
+    {
+        private readonly List<Polyline> _seams = new List<Polyline>();
+
+        public GH_CgalSdfCreaseSegmenter()
+          : base("CGAL SDF & Crease Graph-Cut Segmenter", "SDFSeg",
+              "Segments a 3D mesh using the CGAL Shape Diameter Function (SDF) and Log-Likelihood Dihedral Crease Graph-Cut so boundaries snap onto sharp creases and concave necks.",
+              "CraneGH", "04. Segmentation & Fabrication")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("SDFSeg");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Clusters", "K", "Number of SDF + Crease Graph-Cut segments", GH_ParamAccess.item, 5);
+            pManager.AddNumberParameter("Crease Weight", "C", "Dihedral crease & concavity snapping strength (higher locks cuts strictly onto sharp creases for mold pieces)", GH_ParamAccess.item, 3.5);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented watertight mesh pieces", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Crease Seams", "BC", "Geodesically rectified boundary seam curves locked to creases", GH_ParamAccess.list);
+            pManager.AddNumberParameter("SDF Scalar", "SDF", "Log-normalized Shape Diameter Function (volumetric thickness) per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by SDF Graph-Cut segment", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            if (DA.Iteration == 0) _seams.Clear();
+
+            Mesh m = null;
+            int kClusters = 5;
+            double creaseW = 3.5;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref kClusters);
+            DA.GetData(2, ref creaseW);
+
+            var ddg = new DdgMesh(m);
+            List<Mesh> subMeshes = DdgAlgorithms.ComputeCgalSdfAndCreaseGraphCutSegmentation(
+                ddg, kClusters, creaseW,
+                out List<Polyline> seams,
+                out double[] sdfField,
+                out Mesh coloredMesh);
+
+            _seams.AddRange(seams);
+
+            DA.SetDataList(0, subMeshes);
+            DA.SetDataList(1, seams);
+            DA.SetDataList(2, sdfField);
+            DA.SetData(3, coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _seams.Count == 0) return;
+
+            Color cSeam = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 245, 210);
+            foreach (var pl in _seams)
+                args.Display.DrawPolyline(pl, cSeam, 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000066");
+    }
+
+    public class GH_SalientSpectralSegmenter : GH_Component
+    {
+        private readonly List<Polyline> _seams = new List<Polyline>();
+
+        public GH_SalientSpectralSegmenter()
+          : base("Salient Spectral & Concavity Segmenter", "SpectralSeg",
+              "Segments a 3D mesh via Recursive Salient Spectral Cuts, Concavity-Enhanced Geometric Laplacian M, and L-infinity CVT (Zhang & Liu VMV 2005 / Liu & Zhang EG 2007 / Hu & Zhang 2016).",
+              "CraneGH", "04. Segmentation & Fabrication")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("SpectralSeg");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D surface mesh", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Parts", "K", "Target number of salient parts", GH_ParamAccess.item, 5);
+            pManager.AddNumberParameter("Crease & Concavity", "C", "Concavity & crease cut strength (Minima Rule weight for salient cuts)", GH_ParamAccess.item, 3.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Segmented salient mesh parts", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Salient Cut Curves", "BC", "Optimal salient cut boundary curves along concavities and creases", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Spectral Field", "Z", "1D Nyström / Secondary Laplace Spectral embedding scalar per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by salient spectral part", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            if (DA.Iteration == 0) _seams.Clear();
+
+            Mesh m = null;
+            int kParts = 5;
+            double concW = 3.0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref kParts);
+            DA.GetData(2, ref concW);
+
+            var ddg = new DdgMesh(m);
+            List<Mesh> subMeshes = DdgAlgorithms.ComputeSalientSpectralAndConcavitySegmentation(
+                ddg, kParts, concW,
+                out List<Polyline> seams,
+                out double[] specField,
+                out Mesh coloredMesh);
+
+            _seams.AddRange(seams);
+
+            DA.SetDataList(0, subMeshes);
+            DA.SetDataList(1, seams);
+            DA.SetDataList(2, specField);
+            DA.SetData(3, coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _seams.Count == 0) return;
+
+            Color cSeam = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(255, 200, 45);
+            foreach (var pl in _seams)
+                args.Display.DrawPolyline(pl, cSeam, 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000067");
+    }
+
+    public class GH_CurvatureTensorRectifiedSegmenter : GH_Component
+    {
+        private readonly List<Polyline> _rectSeams = new List<Polyline>();
+        private readonly List<Polyline> _sharpCreases = new List<Polyline>();
+
+        public GH_CurvatureTensorRectifiedSegmenter()
+          : base("CAD Crease & Curvature Tensor Segmenter", "TensorRectSeg",
+              "Decomposes a mesh into constant-curvature and crease-bounded mold/CAD patches via Principal Curvature Tensor (Kmin, Kmax) Region Merging and Boundary Rectification (Lavoué, Dupont, Baskurt LIRIS-1815).",
+              "CraneGH", "04. Segmentation & Fabrication")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("TensorRectSeg");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Mesh", "M", "Input 3D mesh (CAD, mold, or organic surface)", GH_ParamAccess.item);
+            pManager.AddIntegerParameter("Patch Count", "K", "Target number of merged constant-curvature / crease-bounded patches", GH_ParamAccess.item, 6);
+            pManager.AddNumberParameter("Crease Angle (Deg)", "A", "Dihedral crease threshold angle in degrees for hard mold/CAD boundaries", GH_ParamAccess.item, 25.0);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddMeshParameter("Sub-Meshes", "SM", "Rectified constant-curvature / crease-bounded mesh patches", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Rectified Seams", "BC", "Rectified patch boundary curves aligned with creases and minimum curvature directions", GH_ParamAccess.list);
+            pManager.AddCurveParameter("Sharp Creases", "SC", "Detected sharp dihedral crease feature curves (>= Angle A)", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Combined mesh colored by rectified curvature patch", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            if (DA.Iteration == 0)
+            {
+                _rectSeams.Clear();
+                _sharpCreases.Clear();
+            }
+
+            Mesh m = null;
+            int kPatches = 6;
+            double creaseDeg = 25.0;
+
+            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(1, ref kPatches);
+            DA.GetData(2, ref creaseDeg);
+
+            var ddg = new DdgMesh(m);
+            List<Mesh> subMeshes = DdgAlgorithms.ComputeCurvatureTensorRectifiedSegmentation(
+                ddg, kPatches, creaseDeg,
+                out List<Polyline> rectSeams,
+                out List<Polyline> sharpCreases,
+                out Mesh coloredMesh);
+
+            _rectSeams.AddRange(rectSeams);
+            _sharpCreases.AddRange(sharpCreases);
+
+            DA.SetDataList(0, subMeshes);
+            DA.SetDataList(1, rectSeams);
+            DA.SetDataList(2, sharpCreases);
+            DA.SetData(3, coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked) return;
+
+            foreach (var pl in _rectSeams)
+                args.Display.DrawPolyline(pl, Color.FromArgb(30, 35, 45), 2);
+            foreach (var pl in _sharpCreases)
+                args.Display.DrawPolyline(pl, Color.Gold, 3);
+        }
+
+        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000068");
     }
 }

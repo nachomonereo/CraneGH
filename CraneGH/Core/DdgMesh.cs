@@ -1,9 +1,259 @@
 using System;
 using System.Collections.Generic;
+using Grasshopper.Kernel;
+using Grasshopper.Kernel.Data;
+using Grasshopper.Kernel.Types;
 using Rhino.Geometry;
 
 namespace CraneGH.Core
 {
+    /// <summary>
+    /// Automatically normalizes Grasshopper DataTrees when working with multiple Meshes (Grafted or List)
+    /// and multiple Scalar / Vector Fields or Curve / Geometry sources (Grafted, List, or Flattened).
+    /// Prevents cross-product branch mismatches and accidental over-grafting of per-vertex field lists.
+    /// </summary>
+    public static class CraneTreeHelper
+    {
+        public static void NormalizeMeshAndFieldTrees(
+            GH_Component comp,
+            int meshParamIdx,
+            int[] fieldListParamIndices,
+            int[] geometryListParamIndices = null)
+        {
+            if (comp == null || meshParamIdx < 0 || meshParamIdx >= comp.Params.Input.Count)
+                return;
+
+            IGH_Param meshParam = comp.Params.Input[meshParamIdx];
+            IGH_Structure meshTree = meshParam.VolatileData;
+            if (meshTree == null || meshTree.IsEmpty) return;
+
+            var meshes = new List<Mesh>();
+            for (int b = 0; b < meshTree.PathCount; b++)
+            {
+                var branch = meshTree.get_Branch(b);
+                for (int i = 0; i < branch.Count; i++)
+                {
+                    object item = branch[i];
+                    if (item is GH_Mesh ghm && ghm.Value != null) meshes.Add(ghm.Value);
+                    else if (item is Mesh rm) meshes.Add(rm);
+                }
+            }
+            int K = meshes.Count;
+            if (K == 0) return;
+
+            // 1. Heal over-grafted or flattened per-vertex/per-face Field inputs (Scalar or Vector fields)
+            if (fieldListParamIndices != null)
+            {
+                foreach (int fIdx in fieldListParamIndices)
+                {
+                    if (fIdx < 0 || fIdx >= comp.Params.Input.Count) continue;
+                    IGH_Param fParam = comp.Params.Input[fIdx];
+                    if (fParam.Access != GH_ParamAccess.list || fParam.VolatileData.IsEmpty) continue;
+
+                    var fTree = fParam.VolatileData;
+
+                    // Case A: User right-clicked "Graft" on a Field input (which was already a list of V vertex values per mesh),
+                    // splitting V (or K*V) numbers/vectors into 1-item branches!
+                    int minVerts = Math.Max(3, meshes[0].Vertices.Count);
+                    bool allSingle = fTree.PathCount >= minVerts;
+                    if (allSingle)
+                    {
+                        for (int b = 0; b < fTree.PathCount; b++)
+                        {
+                            if (fTree.get_Branch(b).Count > 1) { allSingle = false; break; }
+                        }
+                    }
+
+                    if (allSingle)
+                    {
+                        // Ungraft one level by grouping items by their parent GH_Path (or partitioning by mesh vertex count)
+                        var regrouped = new GH_Structure<IGH_Goo>();
+                        bool hasMultiLevelPath = fTree.Paths[0].Length >= 2;
+                        if (hasMultiLevelPath)
+                        {
+                            for (int b = 0; b < fTree.PathCount; b++)
+                            {
+                                GH_Path parentPath = fTree.Paths[b].CullElement();
+                                var br = fTree.get_Branch(b);
+                                for (int i = 0; i < br.Count; i++)
+                                    regrouped.Append(br[i] as IGH_Goo, parentPath);
+                            }
+                        }
+
+                        // If parent-path regrouping still has != K branches when K > 1, partition sequentially by mesh vertex count
+                        if (K > 1 && regrouped.PathCount != K)
+                        {
+                            var flatItems = new List<IGH_Goo>(fTree.DataCount);
+                            for (int b = 0; b < fTree.PathCount; b++)
+                            {
+                                var br = fTree.get_Branch(b);
+                                for (int i = 0; i < br.Count; i++)
+                                    flatItems.Add(br[i] as IGH_Goo);
+                            }
+                            regrouped = TryPartitionFlatFieldByMeshes(flatItems, meshes, meshTree) ?? regrouped;
+                        }
+                        else if (K == 1 && regrouped.PathCount == 0)
+                        {
+                            GH_Path p0 = meshTree.Paths[0];
+                            for (int b = 0; b < fTree.PathCount; b++)
+                            {
+                                var br = fTree.get_Branch(b);
+                                for (int i = 0; i < br.Count; i++)
+                                    regrouped.Append(br[i] as IGH_Goo, p0);
+                            }
+                        }
+
+                        if (!regrouped.IsEmpty)
+                        {
+                            fParam.VolatileData.Clear();
+                            fParam.AddVolatileDataTree(regrouped);
+                            fTree = fParam.VolatileData;
+                        }
+                    }
+
+                    // Case B: User Flattened K fields into 1 single flat list of sum(V_b) items while passing K > 1 meshes
+                    if (K > 1 && fTree.PathCount == 1 && fTree.DataCount > meshes[0].Vertices.Count)
+                    {
+                        var br = fTree.get_Branch(0);
+                        var flatItems = new List<IGH_Goo>(br.Count);
+                        for (int i = 0; i < br.Count; i++)
+                            flatItems.Add(br[i] as IGH_Goo);
+
+                        var partitioned = TryPartitionFlatFieldByMeshes(flatItems, meshes, meshTree);
+                        if (partitioned != null)
+                        {
+                            fParam.VolatileData.Clear();
+                            fParam.AddVolatileDataTree(partitioned);
+                            fTree = fParam.VolatileData;
+                        }
+                    }
+                }
+            }
+
+            // 2. Align Branch Paths 1-to-1 when K > 1 Meshes are paired with K branches of Fields or Geometries
+            if (K > 1)
+            {
+                var allListIndices = new List<int>();
+                if (fieldListParamIndices != null) allListIndices.AddRange(fieldListParamIndices);
+                if (geometryListParamIndices != null) allListIndices.AddRange(geometryListParamIndices);
+
+                // Check if any list input has exactly K branches
+                GH_Path[] targetPaths = null;
+                foreach (int lIdx in allListIndices)
+                {
+                    if (lIdx < 0 || lIdx >= comp.Params.Input.Count) continue;
+                    IGH_Param lParam = comp.Params.Input[lIdx];
+                    if (lParam.VolatileData.PathCount == K)
+                    {
+                        targetPaths = new GH_Path[K];
+                        for (int b = 0; b < K; b++)
+                            targetPaths[b] = lParam.VolatileData.Paths[b];
+                        break;
+                    }
+                }
+
+                // If Mesh has 1 branch with K meshes and a list input has K branches -> Graft Mesh to match targetPaths!
+                if (meshTree.PathCount == 1 && meshTree.DataCount == K && targetPaths != null)
+                {
+                    var graftedMeshes = new GH_Structure<IGH_Goo>();
+                    var br = meshTree.get_Branch(0);
+                    for (int b = 0; b < K; b++)
+                        graftedMeshes.Append(br[b] as IGH_Goo, targetPaths[b]);
+                    meshParam.VolatileData.Clear();
+                    meshParam.AddVolatileDataTree(graftedMeshes);
+                    meshTree = meshParam.VolatileData;
+                }
+
+                // Now if Mesh has K branches (1 mesh per branch), align any K-branch list inputs to use the exact same GH_Paths as Mesh!
+                if (meshTree.PathCount == K)
+                {
+                    foreach (int lIdx in allListIndices)
+                    {
+                        if (lIdx < 0 || lIdx >= comp.Params.Input.Count) continue;
+                        IGH_Param lParam = comp.Params.Input[lIdx];
+                        if (lParam.VolatileData.PathCount == K)
+                        {
+                            bool pathsDiffer = false;
+                            for (int b = 0; b < K; b++)
+                            {
+                                if (!lParam.VolatileData.Paths[b].Equals(meshTree.Paths[b]))
+                                {
+                                    pathsDiffer = true;
+                                    break;
+                                }
+                            }
+                            if (pathsDiffer)
+                            {
+                                var aligned = new GH_Structure<IGH_Goo>();
+                                for (int b = 0; b < K; b++)
+                                {
+                                    GH_Path mp = meshTree.Paths[b];
+                                    var br = lParam.VolatileData.get_Branch(b);
+                                    for (int i = 0; i < br.Count; i++)
+                                        aligned.Append(br[i] as IGH_Goo, mp);
+                                }
+                                lParam.VolatileData.Clear();
+                                lParam.AddVolatileDataTree(aligned);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private static GH_Structure<IGH_Goo> TryPartitionFlatFieldByMeshes(
+            List<IGH_Goo> flatItems,
+            List<Mesh> meshes,
+            IGH_Structure meshTree)
+        {
+            int K = meshes.Count;
+            int totalRawV = 0, totalFaces = 0;
+            for (int b = 0; b < K; b++)
+            {
+                totalRawV += meshes[b].Vertices.Count;
+                totalFaces += meshes[b].Faces.Count;
+            }
+
+            int[] countsPerMesh = null;
+            if (flatItems.Count == totalRawV)
+            {
+                countsPerMesh = new int[K];
+                for (int b = 0; b < K; b++) countsPerMesh[b] = meshes[b].Vertices.Count;
+            }
+            else if (flatItems.Count == totalFaces)
+            {
+                countsPerMesh = new int[K];
+                for (int b = 0; b < K; b++) countsPerMesh[b] = meshes[b].Faces.Count;
+            }
+            else
+            {
+                // Check welded DdgMesh vertex counts
+                int totalWeldedV = 0;
+                int[] weldedCounts = new int[K];
+                for (int b = 0; b < K; b++)
+                {
+                    var ddg = new DdgMesh(meshes[b]);
+                    weldedCounts[b] = ddg.VertexCount;
+                    totalWeldedV += ddg.VertexCount;
+                }
+                if (flatItems.Count == totalWeldedV)
+                    countsPerMesh = weldedCounts;
+            }
+
+            if (countsPerMesh == null) return null;
+
+            var tree = new GH_Structure<IGH_Goo>();
+            int offset = 0;
+            for (int b = 0; b < K; b++)
+            {
+                GH_Path path = (meshTree.PathCount == K) ? meshTree.Paths[b] : new GH_Path(0, b);
+                int cnt = countsPerMesh[b];
+                for (int i = 0; i < cnt && offset < flatItems.Count; i++, offset++)
+                    tree.Append(flatItems[offset], path);
+            }
+            return tree;
+        }
+    }
     public class DdgHalfEdge
     {
         public int Index;
@@ -81,7 +331,6 @@ namespace CraneGH.Core
             // so unwelded Rhino meshes (boxes, extrusions, Brep meshes) are topologically connected
             Mesh temp = inputMesh.DuplicateMesh();
             temp.Faces.ConvertQuadsToTriangles();
-            temp.Compact();
 
             RhinoMesh = BuildPositionWeldedMesh(temp, out RawToDdgVertex);
             VertexCount = RhinoMesh.Vertices.Count;
@@ -192,6 +441,37 @@ namespace CraneGH.Core
                     welded.Faces.AddFace(a, b, c);
                 }
             }
+
+            // Preserve TextureCoordinates and VertexColors across welding so Colored Meshes (CM) carry exact scalars
+            if (triMesh.TextureCoordinates != null && triMesh.TextureCoordinates.Count == rawVCount)
+            {
+                Point2f[] tc = new Point2f[compactPts.Count];
+                int[] tcCnt = new int[compactPts.Count];
+                for (int i = 0; i < rawVCount; i++)
+                {
+                    int w = rawToWelded[i];
+                    Point2f uv = triMesh.TextureCoordinates[i];
+                    tc[w] = new Point2f(tc[w].X + uv.X, tc[w].Y + uv.Y);
+                    tcCnt[w]++;
+                }
+                welded.TextureCoordinates.Clear();
+                for (int i = 0; i < compactPts.Count; i++)
+                {
+                    float inv = tcCnt[i] > 0 ? 1.0f / tcCnt[i] : 1.0f;
+                    welded.TextureCoordinates.Add(tc[i].X * inv, tc[i].Y * inv);
+                }
+            }
+
+            if (triMesh.VertexColors != null && triMesh.VertexColors.Count == rawVCount)
+            {
+                var cols = new System.Drawing.Color[compactPts.Count];
+                for (int i = 0; i < rawVCount; i++)
+                    cols[rawToWelded[i]] = triMesh.VertexColors[i];
+                welded.VertexColors.Clear();
+                for (int i = 0; i < compactPts.Count; i++)
+                    welded.VertexColors.Add(cols[i]);
+            }
+
             welded.Normals.ComputeNormals();
             return welded;
         }
@@ -205,6 +485,22 @@ namespace CraneGH.Core
             double[] res = new double[VertexCount];
             if (input == null || input.Count == 0)
             {
+                // First check if mesh carries exact float scalar values encoded in TextureCoordinates (Y == -777.0f marker)
+                if (RhinoMesh.TextureCoordinates != null && RhinoMesh.TextureCoordinates.Count == VertexCount)
+                {
+                    bool hasMarker = true;
+                    for (int i = 0; i < Math.Min(8, VertexCount); i++)
+                    {
+                        if (Math.Abs(RhinoMesh.TextureCoordinates[i].Y - (-777.0f)) > 1.0f) { hasMarker = false; break; }
+                    }
+                    if (hasMarker)
+                    {
+                        for (int i = 0; i < VertexCount; i++)
+                            res[i] = RhinoMesh.TextureCoordinates[i].X;
+                        return res;
+                    }
+                }
+
                 // Fallback: if mesh already carries VertexColors (e.g. from SmoothScalar CM output), decode luminance!
                 if (RhinoMesh.VertexColors.Count == VertexCount)
                 {
@@ -249,10 +545,44 @@ namespace CraneGH.Core
                 for (int i = 0; i < VertexCount; i++)
                     if (counts[i] > 1) res[i] /= counts[i];
             }
+            else if (RawInputMesh != null && input.Count == RawInputMesh.Faces.Count)
+            {
+                int[] counts = new int[VertexCount];
+                for (int f = 0; f < RawInputMesh.Faces.Count; f++)
+                {
+                    MeshFace mf = RawInputMesh.Faces[f];
+                    double val = input[f];
+                    int[] corners = mf.IsQuad ? new int[] { mf.A, mf.B, mf.C, mf.D } : new int[] { mf.A, mf.B, mf.C };
+                    foreach (int c in corners)
+                    {
+                        if (c >= 0 && c < RawToDdgVertex.Length)
+                        {
+                            int w = RawToDdgVertex[c];
+                            res[w] += val;
+                            counts[w]++;
+                        }
+                    }
+                }
+                for (int i = 0; i < VertexCount; i++)
+                    if (counts[i] > 1) res[i] /= counts[i];
+            }
+            else if (input.Count == 1)
+            {
+                double val = input[0];
+                for (int i = 0; i < VertexCount; i++) res[i] = val;
+            }
             else
             {
+                // Smooth proportional interpolation across index range [0 .. input.Count - 1]
+                int m = input.Count;
                 for (int i = 0; i < VertexCount; i++)
-                    res[i] = input[Math.Min(i, input.Count - 1)];
+                {
+                    double pos = (VertexCount > 1) ? (i * (m - 1.0) / (VertexCount - 1.0)) : 0.0;
+                    int idx0 = Math.Max(0, Math.Min(m - 1, (int)Math.Floor(pos)));
+                    int idx1 = Math.Max(0, Math.Min(m - 1, idx0 + 1));
+                    double frac = pos - idx0;
+                    res[i] = (1.0 - frac) * input[idx0] + frac * input[idx1];
+                }
             }
             return res;
         }
@@ -275,28 +605,73 @@ namespace CraneGH.Core
             }
             else if (input.Count == RawToDdgVertex.Length)
             {
+                int[] counts = new int[VertexCount];
                 for (int i = 0; i < RawToDdgVertex.Length; i++)
-                    res[RawToDdgVertex[i]] += input[i];
+                {
+                    int w = RawToDdgVertex[i];
+                    res[w] += input[i];
+                    counts[w]++;
+                }
                 for (int i = 0; i < VertexCount; i++)
-                    if (res[i].Length > 1e-12) res[i].Unitize();
+                    if (counts[i] > 1) res[i] /= counts[i];
             }
             else if (input.Count == FaceCount)
             {
+                int[] counts = new int[VertexCount];
                 for (int f = 0; f < FaceCount; f++)
                 {
                     int[] fv = Faces[f];
                     Vector3d vf = input[f];
-                    res[fv[0]] += vf;
-                    res[fv[1]] += vf;
-                    res[fv[2]] += vf;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        res[fv[k]] += vf;
+                        counts[fv[k]]++;
+                    }
                 }
                 for (int i = 0; i < VertexCount; i++)
-                    if (res[i].Length > 1e-12) res[i].Unitize();
+                    if (counts[i] > 1) res[i] /= counts[i];
+            }
+            else if (RawInputMesh != null && input.Count == RawInputMesh.Faces.Count)
+            {
+                int[] counts = new int[VertexCount];
+                for (int f = 0; f < RawInputMesh.Faces.Count; f++)
+                {
+                    MeshFace mf = RawInputMesh.Faces[f];
+                    Vector3d vf = input[f];
+                    int[] corners = mf.IsQuad ? new int[] { mf.A, mf.B, mf.C, mf.D } : new int[] { mf.A, mf.B, mf.C };
+                    foreach (int c in corners)
+                    {
+                        if (c >= 0 && c < RawToDdgVertex.Length)
+                        {
+                            int w = RawToDdgVertex[c];
+                            res[w] += vf;
+                            counts[w]++;
+                        }
+                    }
+                }
+                for (int i = 0; i < VertexCount; i++)
+                    if (counts[i] > 1) res[i] /= counts[i];
+            }
+            else if (input.Count == 1)
+            {
+                Vector3d v0 = input[0];
+                for (int i = 0; i < VertexCount; i++)
+                {
+                    Vector3d proj = v0 - (v0 * VertexNormals[i]) * VertexNormals[i];
+                    res[i] = proj.Length > 1e-12 ? proj : PrincipalDir[i];
+                }
             }
             else
             {
+                int m = input.Count;
                 for (int i = 0; i < VertexCount; i++)
-                    res[i] = input[Math.Min(i, input.Count - 1)];
+                {
+                    double pos = (VertexCount > 1) ? (i * (m - 1.0) / (VertexCount - 1.0)) : 0.0;
+                    int idx0 = Math.Max(0, Math.Min(m - 1, (int)Math.Floor(pos)));
+                    int idx1 = Math.Max(0, Math.Min(m - 1, idx0 + 1));
+                    double frac = pos - idx0;
+                    res[i] = (1.0 - frac) * input[idx0] + frac * input[idx1];
+                }
             }
             return res;
         }

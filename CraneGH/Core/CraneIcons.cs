@@ -74,6 +74,9 @@ namespace CraneGH.Core
                     case "Skeleton": DrawSkeleton(g); break;
                     case "CleanCloud": DrawCleanCloud(g); break;
                     case "MCFlow": DrawMCFlow(g); break;
+                    case "SDFSeg": DrawSDFSeg(g); break;
+                    case "SpectralSeg": DrawSpectralSeg(g); break;
+                    case "TensorRectSeg": DrawTensorRectSeg(g); break;
 
                     // 05. Remesh & Advanced DDG + FieldMix
                     case "FieldMix": DrawFieldMix(g); break;
@@ -790,6 +793,65 @@ namespace CraneGH.Core
                 g.DrawBezier(roughPen, new PointF(3, 17), new PointF(8, 3), new PointF(16, 21), new PointF(21, 7));
             using (var fairPen = new Pen(Color.FromArgb(0, 240, 215), 2.4f))
                 g.DrawBezier(fairPen, new PointF(3, 16), new PointF(9, 7), new PointF(15, 7), new PointF(21, 16));
+        }
+
+        // SDFSeg: CGAL Shape Diameter Function Ray Cone + Crease Graph-Cut Seam
+        private static void DrawSDFSeg(Graphics g)
+        {
+            using (var b1 = new SolidBrush(Color.FromArgb(55, 135, 215)))
+                g.FillPie(b1, 1.5f, 1.5f, 21f, 21f, 150, 180);
+            using (var b2 = new SolidBrush(Color.FromArgb(235, 85, 60)))
+                g.FillPie(b2, 1.5f, 1.5f, 21f, 21f, -30, 180);
+            using (var rayPen = new Pen(Color.FromArgb(190, 255, 235, 110), 1.2f))
+            {
+                g.DrawLine(rayPen, 6, 17, 15, 6);
+                g.DrawLine(rayPen, 6, 17, 18, 9);
+                g.DrawLine(rayPen, 6, 17, 19, 13);
+            }
+            using (var cutPen = new Pen(Color.FromArgb(0, 255, 215), 2.3f))
+                g.DrawLine(cutPen, 3.5f, 7f, 20.5f, 17f);
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
+        }
+
+        // SpectralSeg: Salient Spectral Bisection Eigen-Wave + Concavity Cut
+        private static void DrawSpectralSeg(Graphics g)
+        {
+            using (var b1 = new SolidBrush(Color.FromArgb(0, 165, 140)))
+                g.FillPie(b1, 1.5f, 1.5f, 21f, 21f, 90, 140);
+            using (var b2 = new SolidBrush(Color.FromArgb(235, 140, 50)))
+                g.FillPie(b2, 1.5f, 1.5f, 21f, 21f, 230, 110);
+            using (var b3 = new SolidBrush(Color.FromArgb(80, 110, 205)))
+                g.FillPie(b3, 1.5f, 1.5f, 21f, 21f, -20, 110);
+            using (var cutPen = new Pen(Color.Gold, 2.3f))
+            {
+                g.DrawLine(cutPen, 12, 12, 12, 22.5f);
+                g.DrawLine(cutPen, 12, 12, 4.5f, 4.5f);
+                g.DrawLine(cutPen, 12, 12, 21.5f, 8.5f);
+            }
+            g.FillEllipse(Brushes.White, 5.5f, 13f, 3.2f, 3.2f);
+            g.FillEllipse(Brushes.White, 15.0f, 13f, 3.2f, 3.2f);
+            using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
+                g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
+        }
+
+        // TensorRectSeg: CAD/Mold Constant-Curvature Patches + Rectified Golden Sharp Crease Borders
+        private static void DrawTensorRectSeg(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(40, 50, 68), Color.FromArgb(22, 28, 40));
+            using (var p1 = new SolidBrush(Color.FromArgb(225, 75, 55)))
+                g.FillPolygon(p1, new PointF[] { new PointF(4, 10), new PointF(12, 4), new PointF(20, 10), new PointF(12, 13) });
+            using (var p2 = new SolidBrush(Color.FromArgb(65, 175, 215)))
+                g.FillPolygon(p2, new PointF[] { new PointF(4, 10), new PointF(12, 13), new PointF(12, 20), new PointF(4, 17) });
+            using (var p3 = new SolidBrush(Color.FromArgb(0, 165, 135)))
+                g.FillPolygon(p3, new PointF[] { new PointF(20, 10), new PointF(12, 13), new PointF(12, 20), new PointF(20, 17) });
+            using (var creasePen = new Pen(Color.Gold, 2.0f))
+            {
+                g.DrawLine(creasePen, 4, 10, 12, 13);
+                g.DrawLine(creasePen, 20, 10, 12, 13);
+                g.DrawLine(creasePen, 12, 13, 12, 20);
+                g.DrawPolygon(creasePen, new PointF[] { new PointF(4, 10), new PointF(12, 4), new PointF(20, 10), new PointF(20, 17), new PointF(12, 20), new PointF(4, 17) });
+            }
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)

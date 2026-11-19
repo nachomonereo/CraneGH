@@ -654,11 +654,16 @@ namespace CraneGH.Components
             pManager.AddNumberParameter("Face Sizes", "S", "Measured average edge distance per quad face", GH_ParamAccess.list);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _quadMesh = null;
             _wireLines.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1, 2 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var vecField = new List<Vector3d>();
             var distOrWeights = new List<double>();
@@ -698,7 +703,7 @@ namespace CraneGH.Components
             args.Display.DrawLines(_wireLines, Color.FromArgb(215, 0, 215, 255), 1);
         }
 
-        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000055");
+        public override Guid ComponentGuid => new Guid("A10AB20A-C30A-4D0A-9E0A-000000000061");
     }
 
     public class GH_DevelopableMeshStrip : GH_Component
@@ -731,8 +736,11 @@ namespace CraneGH.Components
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _devMesh = null;
-            _rulings.Clear();
+            if (DA.Iteration == 0)
+            {
+                _devMesh = null;
+                _rulings.Clear();
+            }
 
             Mesh m = null;
             double strength = 0.75;
@@ -760,7 +768,7 @@ namespace CraneGH.Components
             args.Display.DrawLines(_rulings, Color.FromArgb(235, 255, 200, 40), 2);
         }
 
-        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000056");
+        public override Guid ComponentGuid => new Guid("A10AB20A-C30A-4D0A-9E0A-000000000062");
     }
 
     public class GH_OptimalConeSingularities : GH_Component
@@ -794,12 +802,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by conformal distortion scalar", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _coloredMesh = null;
             _cones.Clear();
             _cutSegments.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 2 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             int coneCount = 4;
             var weights = new List<double>();
@@ -836,7 +849,7 @@ namespace CraneGH.Components
                 args.Display.DrawPoints(_cones, Rhino.Display.PointStyle.RoundControlPoint, 6, Color.Gold);
         }
 
-        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000057");
+        public override Guid ComponentGuid => new Guid("A10AB20A-C30A-4D0A-9E0A-000000000063");
     }
 
     public class GH_SurfaceWindingNumber : GH_Component
@@ -866,10 +879,15 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the surface winding number field", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _coloredMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, null, new int[] { 1 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _coloredMesh = null;
-
             Mesh m = null;
             var crvs = new List<Curve>();
             if (!DA.GetData(0, ref m) || m == null) return;
@@ -892,7 +910,7 @@ namespace CraneGH.Components
             args.Display.DrawMeshFalseColors(_coloredMesh);
         }
 
-        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000058");
+        public override Guid ComponentGuid => new Guid("A10AB20A-C30A-4D0A-9E0A-000000000064");
     }
 
     public class GH_ConformalWillmoreFlow : GH_Component
@@ -923,10 +941,15 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Willmore bending energy", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _fairMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 2 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _fairMesh = null;
-
             Mesh m = null;
             double step = 0.5;
             var weights = new List<double>();
@@ -944,6 +967,6 @@ namespace CraneGH.Components
             DA.SetData(2, coloredMesh);
         }
 
-        public override Guid ComponentGuid => new Guid("A108B208-C308-4D08-9E08-000000000059");
+        public override Guid ComponentGuid => new Guid("A10AB20A-C30A-4D0A-9E0A-000000000065");
     }
 }

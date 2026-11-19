@@ -266,6 +266,12 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the smoothed scalar field", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Mesh m = null;
@@ -320,11 +326,16 @@ namespace CraneGH.Components
             pManager.AddNumberParameter("Gradient Magnitude", "GM", "Slope / magnitude ||grad u|| per vertex", GH_ParamAccess.list);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _walkPaths.Clear();
             _gradArrows.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 }, new int[] { 2 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var uList = new List<double>();
             var seeds = new List<Point3d>();
@@ -413,11 +424,16 @@ namespace CraneGH.Components
             pManager.AddIntervalParameter("Scalar Domain", "D", "Domain [Min, Max] of the scalar field in real units", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _coloredMesh = null;
             _isoLines.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var uList = new List<double>();
             int palette = 0;
@@ -511,12 +527,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Slope Mesh", "CM", "Mesh colored by gradient slope magnitude ||grad S||", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _gradLines.Clear();
             _wavefrontTicks.Clear();
             _slopeMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var sList = new List<double>();
             double scale = 0.75;
@@ -589,12 +610,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by local Curl / Rotation intensity", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _uLines.Clear();
             _vLines.Clear();
             _analysisMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var inVecs = new List<Vector3d>();
             double scale = 0.70;

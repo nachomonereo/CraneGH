@@ -243,6 +243,12 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Striped Mesh", "CM", "Mesh vertex-colored with the stripe pattern", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1, 2 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
             Mesh m = null;
@@ -303,11 +309,16 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Striped Mesh", "CM", "Mesh vertex-colored with the stripe pattern", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _vecSegs.Clear();
             _stripes.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, null, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var guides = new List<Curve>();
             double dist = 0.0;
@@ -427,12 +438,17 @@ namespace CraneGH.Components
             pManager.AddPointParameter("Singularities", "P", "Detected cross-field singularity points (3-way or 5-way quad vertices)", GH_ParamAccess.list);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _uLines.Clear();
             _vLines.Clear();
             _singularities.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var inField = new List<Vector3d>();
             double align = 1.0;
@@ -525,12 +541,17 @@ namespace CraneGH.Components
             pManager.AddPointParameter("Singularities", "B", "Branch / singularity points", GH_ParamAccess.list);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _uCurves.Clear();
             _vCurves.Clear();
             _sings.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var uInput = new List<Vector3d>();
             double dist = 0.0;
@@ -620,9 +641,15 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the redistributed scalar potential", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _previewArrows.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _previewArrows.Clear();
             Mesh m = null;
             var inVecs = new List<Vector3d>();
             double smoothness = 2.5;
@@ -707,13 +734,18 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by Magnitude (0), Curl (1), Geodesic Slope (2), or Vector Gradient Norm (3)", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _primaryLines.Clear();
             _secondaryLines.Clear();
             _glyphColors.Clear();
             _coloredMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var rawItems = new List<object>();
             double scale = 0.75;
@@ -826,12 +858,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Weight Mesh", "CM", "Mesh colored by normalized Scalar Weight S in [0..1] (Blue = 0, Gold/Red = 1)", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _flowPaths.Clear();
             _guidedArrows.Clear();
             _relMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1, 2 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var inVecs = new List<Vector3d>();
             var inWeights = new List<double>();
@@ -1173,12 +1210,17 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Striped Mesh", "SM", "Mesh colored with the variable-density stripe pattern", GH_ParamAccess.item);
         }
 
-        protected override void SolveInstance(IGH_DataAccess DA)
+        protected override void BeforeSolveInstance()
         {
+            base.BeforeSolveInstance();
             _stripeCurves.Clear();
             _xCrossSegments.Clear();
             _stripedMesh = null;
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
 
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
             Mesh m = null;
             var rawS = new List<object>();
             double baseDist = 0.0;
@@ -1369,10 +1411,15 @@ namespace CraneGH.Components
             pManager.AddLineParameter("Preview Segments", "L", "Lightweight 3D line segments of the rotated vector field", GH_ParamAccess.list);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _previewLines.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1, 2 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _previewLines.Clear();
-
             Mesh m = null;
             var inVecs = new List<Vector3d>();
             var angles = new List<double>();
@@ -1419,7 +1466,7 @@ namespace CraneGH.Components
         {
         }
 
-        protected override Bitmap Icon => CraneIcons.GetIcon("GuidedFlow");
+        protected override Bitmap Icon => CraneIcons.GetIcon("FieldMix");
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
@@ -1438,10 +1485,15 @@ namespace CraneGH.Components
             pManager.AddNumberParameter("Normalized Weights", "W", "Normalized scalar weights in [0..1] (plug into Stripes D or QuadRemesh D!)", GH_ParamAccess.list);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _previewSegs.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1, 2 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _previewSegs.Clear();
-
             Mesh m = null;
             var inVecs = new List<Vector3d>();
             var inScalars = new List<double>();

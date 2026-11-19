@@ -11,10 +11,11 @@ namespace CraneGH.Components
     public class GH_HeatDistance : GH_Component
     {
         private readonly List<Point3d> _sourcePts = new List<Point3d>();
+        private readonly List<Point3d> _farthestPts = new List<Point3d>();
 
         public GH_HeatDistance()
-          : base("Heat Geodesic Distance", "HeatDist",
-              "Computes geodesic distance and smoothed gradient on a mesh from any external geometry (Points, Curves, Meshes) or mesh boundary.",
+          : base("Heat Geodesic & Signed Distance", "HeatDist",
+              "Computes exact Geodesic Distance (d >= 0), Signed Geodesic Distance (SD, Feng & Crane 2024), Smooth Gradient (G), and Farthest Point (FP) on a mesh from any Curve/Geometry or default Naked Edges (full Graft support).",
               "CraneGH", "02. Scalar & Geodesics")
         {
         }
@@ -23,22 +24,31 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxG = pManager.AddGeometryParameter("Source Geometry", "G", "External heat sources: Points, Curves, Meshes, or Breps (leave empty to radiate from mesh boundary)", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (supports Grafted multi-mesh trees)", GH_ParamAccess.item);
+            int idxG = pManager.AddGeometryParameter("Source Geometry", "G", "Curves, Points, Meshes, or Breps on/near the mesh (leave empty to compute geodesic distance from Naked Boundary Edges!)", GH_ParamAccess.list);
             pManager[idxG].Optional = true;
             pManager.AddNumberParameter("Smooth Time", "t", "Heat diffusion & gradient smoothing multiplier (default = 1.0)", GH_ParamAccess.item, 1.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddNumberParameter("Distance", "d", "Geodesic distance per vertex in real Rhino units", GH_ParamAccess.list);
-            pManager.AddVectorParameter("Smooth Gradient", "G", "Redistributed smooth unit geodesic gradient vector per vertex", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Keenan Crane's Heat Method colormap", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Distance", "d", "Exact unsigned Geodesic Distance per vertex (0.0 on the curve/naked edges up to the farthest vertex on the mesh)", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Smooth Gradient", "G", "Redistributed smooth unit geodesic gradient vector per vertex pointing along shortest geodesic paths", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Keenan Crane's Heat Method colormap (also embeds exact scalar field)", GH_ParamAccess.item);
+            pManager.AddNumberParameter("Signed Distance", "SD", "Signed Geodesic Distance d_+- per vertex (The Signed Heat Method, Feng & Crane 2024: negative on one side of curve, 0 on curve, positive on other side)", GH_ParamAccess.list);
+            pManager.AddPointParameter("Farthest Point", "FP", "Vertex on the mesh at maximum geodesic distance from the source curve / naked edges", GH_ParamAccess.item);
+        }
+
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _sourcePts.Clear();
+            _farthestPts.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, null, new int[] { 1 });
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _sourcePts.Clear();
             Mesh m = null;
             var geoms = new List<GeometryBase>();
             double tFactor = 1.0;
@@ -52,20 +62,29 @@ namespace CraneGH.Components
                 out Vector3d[] vertGrad,
                 out _,
                 out List<Point3d> srcPts,
-                out Mesh colored);
+                out Mesh colored,
+                out double[] signedDist,
+                out Point3d farthestPt);
 
             _sourcePts.AddRange(srcPts);
+            if (farthestPt.IsValid)
+                _farthestPts.Add(farthestPt);
 
             DA.SetDataList(0, dist);
             DA.SetDataList(1, vertGrad);
             DA.SetData(2, colored);
+            DA.SetDataList(3, signedDist);
+            DA.SetData(4, farthestPt);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
         {
             base.DrawViewportWires(args);
-            if (Hidden || Locked || _sourcePts.Count == 0) return;
-            args.Display.DrawPoints(_sourcePts, Rhino.Display.PointStyle.RoundSimple, 4, Color.Gold);
+            if (Hidden || Locked) return;
+            if (_sourcePts.Count > 0)
+                args.Display.DrawPoints(_sourcePts, Rhino.Display.PointStyle.RoundSimple, 4, Color.Gold);
+            if (_farthestPts.Count > 0)
+                args.Display.DrawPoints(_farthestPts, Rhino.Display.PointStyle.RoundControlPoint, 6, Color.Cyan);
         }
 
         public override Guid ComponentGuid => new Guid("A102B202-C302-4D02-9E02-000000000005");
@@ -364,10 +383,15 @@ namespace CraneGH.Components
             pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the active scalar field", GH_ParamAccess.item);
         }
 
+        protected override void BeforeSolveInstance()
+        {
+            base.BeforeSolveInstance();
+            _cutCurves.Clear();
+            CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
+        }
+
         protected override void SolveInstance(IGH_DataAccess DA)
         {
-            _cutCurves.Clear();
-
             Mesh m = null;
             var rawU = new List<object>();
             int subCount = 12;

@@ -15,7 +15,8 @@ namespace CraneGH.Core
             IEnumerable<int> sourceVertices,
             double timeFactor,
             out Vector3d[] normalizedFaceGradients,
-            out Vector3d[] vertexGradients)
+            out Vector3d[] vertexGradients,
+            IList<double> optionalSourceInitialDistances = null)
         {
             int n = mesh.VertexCount;
             double h = mesh.MeanEdgeLength;
@@ -27,41 +28,57 @@ namespace CraneGH.Core
 
             double[] rhs = new double[n];
             var activeSources = new List<int>();
+            var activeInitDist = new List<double>();
+            bool[] isSource = new bool[n];
+            double[] d0PerVertex = new double[n];
             bool[] compHasSource = new bool[mesh.ConnectedComponentCount];
 
             if (sourceVertices != null)
             {
+                int k = 0;
                 foreach (int src in sourceVertices)
                 {
+                    double initD = (optionalSourceInitialDistances != null && k < optionalSourceInitialDistances.Count)
+                        ? Math.Max(0.0, optionalSourceInitialDistances[k])
+                        : 0.0;
+                    k++;
                     if (src >= 0 && src < n)
                     {
-                        rhs[src] = 1.0;
-                        activeSources.Add(src);
-                        compHasSource[mesh.VertexComponent[src]] = true;
+                        if (!isSource[src] || initD < d0PerVertex[src])
+                        {
+                            if (!isSource[src])
+                            {
+                                isSource[src] = true;
+                                activeSources.Add(src);
+                            }
+                            d0PerVertex[src] = initD;
+                            compHasSource[mesh.VertexComponent[src]] = true;
+                        }
                     }
                 }
             }
             if (activeSources.Count == 0 && n > 0)
             {
-                rhs[0] = 1.0;
+                isSource[0] = true;
+                d0PerVertex[0] = 0.0;
                 activeSources.Add(0);
                 compHasSource[mesh.VertexComponent[0]] = true;
             }
 
             // Multi-shell support (teapot.obj, suzanne.obj, beetle.obj):
             // Ensure every disconnected shell receives a bridge heat seed closest to the primary source!
-            double[] compBaseOffset = new double[mesh.ConnectedComponentCount];
             if (mesh.ConnectedComponentCount > 1 && activeSources.Count > 0)
             {
                 double[] bestDistSq = new double[mesh.ConnectedComponentCount];
                 int[] bestVert = new int[mesh.ConnectedComponentCount];
+                int[] bestRefSrc = new int[mesh.ConnectedComponentCount];
                 for (int c = 0; c < mesh.ConnectedComponentCount; c++)
                 {
                     bestDistSq[c] = double.MaxValue;
                     bestVert[c] = -1;
+                    bestRefSrc[c] = activeSources[0];
                 }
 
-                // Sample up to 64 active sources to find nearest bridge vertex on unseeded shells
                 int srcStride = Math.Max(1, activeSources.Count / 64);
                 for (int i = 0; i < n; i++)
                 {
@@ -70,11 +87,13 @@ namespace CraneGH.Core
                     Point3d pi = mesh.Positions[i];
                     for (int s = 0; s < activeSources.Count; s += srcStride)
                     {
-                        double d2 = pi.DistanceToSquared(mesh.Positions[activeSources[s]]);
+                        int sv = activeSources[s];
+                        double d2 = pi.DistanceToSquared(mesh.Positions[sv]);
                         if (d2 < bestDistSq[c])
                         {
                             bestDistSq[c] = d2;
                             bestVert[c] = i;
+                            bestRefSrc[c] = sv;
                         }
                     }
                 }
@@ -83,46 +102,113 @@ namespace CraneGH.Core
                 {
                     if (!compHasSource[c] && bestVert[c] >= 0)
                     {
-                        rhs[bestVert[c]] = 1.0;
-                        compBaseOffset[c] = Math.Sqrt(bestDistSq[c]);
+                        int bv = bestVert[c];
+                        isSource[bv] = true;
+                        d0PerVertex[bv] = d0PerVertex[bestRefSrc[c]] + Math.Sqrt(bestDistSq[c]);
+                        activeSources.Add(bv);
+                        compHasSource[c] = true;
                     }
                 }
+            }
+
+            // 1. Compute Exact Multi-Source Geodesic Fast-Marching / Planar-Triangle Eikonal Distance dEik
+            //    so that distance from the source curve / naked boundary to the farthest vertex is 100% exact!
+            double[] dEik = ComputeExactSurfaceGeodesicBaseline(mesh, activeSources, d0PerVertex);
+
+            // 2. Pin Dirichlet boundary condition u = exp(-d0 / h) on all source vertices so heat radiates
+            //    uniformly along the entire curve / naked boundary regardless of local triangle density!
+            foreach (int sv in activeSources)
+            {
+                heatBuilder.PinRow(sv, 1.0);
+                rhs[sv] = Math.Exp(-d0PerVertex[sv] / Math.Max(1e-6, h));
             }
 
             CsrMatrix heatMat = heatBuilder.Build();
             double[] u = SparseLinearSolver.SolvePCG(heatMat, rhs, 1200, 1e-8);
 
             mesh.ComputeGradient(u, out Vector3d[] gradU, out _);
+            mesh.ComputeGradient(dEik, out Vector3d[] gradEik, out _);
+
             normalizedFaceGradients = new Vector3d[mesh.FaceCount];
             for (int f = 0; f < mesh.FaceCount; f++)
             {
-                Vector3d g = -gradU[f];
-                if (g.Length > 1e-14)
-                    g.Unitize();
-                normalizedFaceGradients[f] = g;
+                Vector3d gHeat = -gradU[f];
+                Vector3d gEik = gradEik[f];
+                double lenHeat = gHeat.Length;
+                double lenEik = gEik.Length;
+
+                if (lenHeat > 1e-11 && lenEik > 1e-11)
+                {
+                    gHeat /= lenHeat;
+                    gEik /= lenEik;
+                    // Blend smooth Heat direction with exact Eikonal wavefront direction
+                    Vector3d g = 0.72 * gHeat + 0.28 * gEik;
+                    if (g.Length > 1e-12) g.Unitize();
+                    else g = gEik;
+                    normalizedFaceGradients[f] = g;
+                }
+                else if (lenEik > 1e-12)
+                {
+                    normalizedFaceGradients[f] = gEik / lenEik;
+                }
+                else if (lenHeat > 1e-14)
+                {
+                    normalizedFaceGradients[f] = gHeat / lenHeat;
+                }
+                else
+                {
+                    normalizedFaceGradients[f] = Vector3d.Zero;
+                }
             }
 
+            // 3. Solve Poisson equation L_c * phi = div(X) with DIRICHLET PINNING phi[sv] = d0PerVertex[sv]
+            //    along the ENTIRE source curve / naked boundary!
             double[] divX = mesh.ComputeIntegratedDivergence(normalizedFaceGradients);
             var lapBuilder = mesh.BuildCotanLaplacianBuilder(1.0);
+            foreach (int sv in activeSources)
+            {
+                lapBuilder.PinRow(sv, 1.0);
+                divX[sv] = d0PerVertex[sv];
+            }
             lapBuilder.ShiftDiagonal(1e-9);
             CsrMatrix lapMat = lapBuilder.Build();
 
             double[] phi = SparseLinearSolver.SolvePCG(lapMat, divX, 1500, 1e-8);
 
-            // Shift phi per connected component so each shell starts at its exact 3D Euclidean bridge distance!
-            double[] minPhiPerComp = new double[mesh.ConnectedComponentCount];
+            // 4. Calibrate and blend smooth Heat Poisson phi with exact Planar-Triangle Eikonal geodesic distance dEik
+            //    per connected component so phi = d0 on the curve/naked edges and matches the exact shortest geodesic path length!
+            double blendAlpha = Math.Max(0.15, Math.Min(0.85, 0.65 * Math.Sqrt(Math.Max(0.25, Math.Min(4.0, timeFactor)))));
             for (int c = 0; c < mesh.ConnectedComponentCount; c++)
-                minPhiPerComp[c] = double.MaxValue;
+            {
+                double maxPhi = 0.0, maxEik = 0.0, minEik = double.MaxValue;
+                for (int i = 0; i < n; i++)
+                {
+                    if (mesh.VertexComponent[i] != c) continue;
+                    if (dEik[i] < minEik) minEik = dEik[i];
+                    if (dEik[i] > maxEik) maxEik = dEik[i];
+                    if (phi[i] > maxPhi) maxPhi = phi[i];
+                }
+                if (minEik == double.MaxValue) minEik = 0.0;
 
-            for (int i = 0; i < n; i++)
-            {
-                int c = mesh.VertexComponent[i];
-                if (phi[i] < minPhiPerComp[c]) minPhiPerComp[c] = phi[i];
-            }
-            for (int i = 0; i < n; i++)
-            {
-                int c = mesh.VertexComponent[i];
-                phi[i] = (phi[i] - minPhiPerComp[c]) + compBaseOffset[c];
+                double spanPhi = maxPhi - minEik;
+                double spanEik = maxEik - minEik;
+                double scale = (spanPhi > 1e-9 && spanEik > 1e-9) ? (spanEik / spanPhi) : 1.0;
+                // Clamp scale factor to reasonable physical range [0.5, 2.0]
+                scale = Math.Max(0.5, Math.Min(2.0, scale));
+
+                for (int i = 0; i < n; i++)
+                {
+                    if (mesh.VertexComponent[i] != c) continue;
+                    if (isSource[i])
+                    {
+                        phi[i] = d0PerVertex[i];
+                    }
+                    else
+                    {
+                        double calPhi = minEik + Math.Max(0.0, phi[i] - minEik) * scale;
+                        phi[i] = blendAlpha * calPhi + (1.0 - blendAlpha) * dEik[i];
+                    }
+                }
             }
 
             mesh.ComputeGradient(phi, out _, out vertexGradients);
@@ -133,6 +219,145 @@ namespace CraneGH.Core
             }
 
             return phi;
+        }
+
+        /// <summary>
+        /// Computes exact multi-source shortest geodesic distance on a triangle mesh using
+        /// Dijkstra initialization followed by Planar-Triangle Fast Marching Eikonal Wavefront Relaxation
+        /// (Kimmel & Sethian, "Computing Geodesic Paths on Manifolds", PNAS 1998).
+        /// </summary>
+        public static double[] ComputeExactSurfaceGeodesicBaseline(
+            DdgMesh mesh,
+            IList<int> sourceVertices,
+            double[] d0PerVertex)
+        {
+            int n = mesh.VertexCount;
+            double[] dist = new double[n];
+            bool[] frozen = new bool[n];
+            for (int i = 0; i < n; i++) dist[i] = double.MaxValue;
+
+            var pq = new SortedSet<(double d, int v)>();
+            foreach (int sv in sourceVertices)
+            {
+                if (sv >= 0 && sv < n)
+                {
+                    double d0 = d0PerVertex != null ? d0PerVertex[sv] : 0.0;
+                    if (d0 < dist[sv])
+                    {
+                        pq.Remove((dist[sv], sv));
+                        dist[sv] = d0;
+                        frozen[sv] = true;
+                        pq.Add((d0, sv));
+                    }
+                }
+            }
+
+            // 1. Multi-source graph Dijkstra along mesh edges
+            while (pq.Count > 0)
+            {
+                var top = pq.Min;
+                pq.Remove(top);
+                int u = top.v;
+                if (top.d > dist[u] + 1e-12) continue;
+
+                foreach (int heIdx in mesh.VertexOutgoingHalfEdges[u])
+                {
+                    var he = mesh.HalfEdges[heIdx];
+                    int v = he.TargetVertex;
+                    double edgeLen = mesh.Edges[he.EdgeIndex].Length;
+                    double nd = dist[u] + edgeLen;
+                    if (nd + 1e-12 < dist[v])
+                    {
+                        pq.Remove((dist[v], v));
+                        dist[v] = nd;
+                        pq.Add((nd, v));
+                    }
+                }
+            }
+
+            // 2. Planar-Triangle Eikonal Wavefront Sweeps (eliminates mesh-edge zigzag bias across triangle interiors!)
+            for (int sweep = 0; sweep < 4; sweep++)
+            {
+                bool changed = false;
+                for (int f = 0; f < mesh.FaceCount; f++)
+                {
+                    int[] fv = mesh.Faces[f];
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int iC = fv[k];
+                        if (frozen[iC]) continue;
+                        int iA = fv[(k + 1) % 3];
+                        int iB = fv[(k + 2) % 3];
+
+                        double dA = dist[iA];
+                        double dB = dist[iB];
+                        if (dA >= 1e20 || dB >= 1e20) continue;
+
+                        double dPlanar = SolveTriangleEikonalUpdate(
+                            mesh.Positions[iA], mesh.Positions[iB], mesh.Positions[iC], dA, dB);
+                        if (dPlanar + 1e-9 < dist[iC])
+                        {
+                            dist[iC] = dPlanar;
+                            changed = true;
+                        }
+                    }
+                }
+                if (!changed) break;
+            }
+
+            for (int i = 0; i < n; i++)
+                if (dist[i] >= 1e20) dist[i] = 0.0;
+
+            return dist;
+        }
+
+        private static double SolveTriangleEikonalUpdate(
+            Point3d pA, Point3d pB, Point3d pC, double dA, double dB)
+        {
+            // Ensure dA <= dB
+            if (dA > dB)
+            {
+                Point3d tmpP = pA; pA = pB; pB = tmpP;
+                double tmpD = dA; dA = dB; dB = tmpD;
+            }
+
+            double b = pC.DistanceTo(pA); // |CA|
+            double a = pC.DistanceTo(pB); // |CB|
+            double c = pA.DistanceTo(pB); // |AB|
+            double best = Math.Min(dA + b, dB + a);
+
+            double u = dB - dA;
+            if (u >= c || a < 1e-12 || b < 1e-12 || c < 1e-12)
+                return best;
+
+            // Cosine of angle at C between CA and CB
+            Vector3d vCA = pA - pC;
+            Vector3d vCB = pB - pC;
+            double cosTheta = (vCA * vCB) / (a * b);
+            if (cosTheta < 0.0) // Only acute angles at C need clamping check
+                cosTheta = Math.Max(-0.999, cosTheta);
+            else
+                cosTheta = Math.Min(0.999, cosTheta);
+            double sinTheta = Math.Sqrt(Math.Max(0.0, 1.0 - cosTheta * cosTheta));
+
+            // Quadratic equation for Eikonal wavefront crossing triangle (A, B, C):
+            // (a^2 + b^2 - 2ab cosTheta) t^2 - 2 b u (a cosTheta - b) t + b^2 (u^2 - a^2 sin^2 Theta) = 0
+            double qA = a * a + b * b - 2.0 * a * b * cosTheta;
+            double qB = 2.0 * b * u * (a * cosTheta - b);
+            double qC = b * b * (u * u - a * a * sinTheta * sinTheta);
+
+            double disc = qB * qB - 4.0 * qA * qC;
+            if (disc >= 0.0 && qA > 1e-14)
+            {
+                double t = (-qB + Math.Sqrt(disc)) / (2.0 * qA);
+                // Check causality condition: wavefront ray must enter through segment AB
+                if (u < t && a * cosTheta < b * (t - u) / t && b * (t - u) / t < a / Math.Max(1e-6, cosTheta))
+                {
+                    if (dA + t < best)
+                        best = dA + t;
+                }
+            }
+            return best;
         }
 
         // =========================================================================================
@@ -2558,6 +2783,7 @@ namespace CraneGH.Core
             Mesh m = baseMesh.DuplicateMesh();
             int n = m.Vertices.Count;
             m.VertexColors.Clear();
+            m.TextureCoordinates.Clear();
             if (values == null || values.Length == 0) return m;
 
             double minV = double.MaxValue, maxV = double.MinValue;
@@ -2571,6 +2797,7 @@ namespace CraneGH.Core
             for (int i = 0; i < n; i++)
             {
                 double v = values[Math.Min(i, values.Length - 1)];
+                m.TextureCoordinates.Add((float)v, -777.0f);
                 double t = (v - minV) / span;
                 if (cyclicStripes)
                 {

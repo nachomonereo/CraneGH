@@ -2418,6 +2418,7 @@ namespace CraneGH.Core
             Mesh m = baseMesh.DuplicateMesh();
             int n = m.Vertices.Count;
             m.VertexColors.Clear();
+            m.TextureCoordinates.Clear();
             if (values == null || values.Length == 0) return m;
 
             double minV = double.MaxValue, maxV = double.MinValue;
@@ -2433,6 +2434,7 @@ namespace CraneGH.Core
             for (int i = 0; i < n; i++)
             {
                 double v = values[Math.Min(i, values.Length - 1)];
+                m.TextureCoordinates.Add((float)v, -777.0f);
                 double t = Math.Max(0.0, Math.Min(1.0, (v - minV) / span));
                 m.VertexColors.Add(EvaluateScientificColor(t, paletteMode));
             }
@@ -2503,7 +2505,8 @@ namespace CraneGH.Core
         }
 
         // =========================================================================================
-        // 22. HEAT DISTANCE FROM EXTERNAL GEOMETRY (Curves, Meshes, Breps, Points) + SMOOTH GRADIENT
+        // 22. HEAT DISTANCE & SIGNED GEODESIC DISTANCE FROM EXTERNAL GEOMETRY / CURVES / NAKED EDGES
+        //     (Crane 2013 + The Signed Heat Method, Feng & Crane SIGGRAPH 2024)
         // =========================================================================================
         public static double[] ComputeExternalGeometryHeatDistance(
             DdgMesh mesh,
@@ -2514,11 +2517,41 @@ namespace CraneGH.Core
             out List<Point3d> resolvedSourcePoints,
             out Mesh coloredMesh)
         {
-            int nV = mesh.VertexCount;
-            var sourceSet = new HashSet<int>();
-            resolvedSourcePoints = new List<Point3d>();
+            return ComputeExternalGeometryHeatDistance(
+                mesh, externalGeometries, timeFactor,
+                out smoothVertexGradients, out smoothFaceGradients,
+                out resolvedSourcePoints, out coloredMesh,
+                out _, out _);
+        }
 
-            double snapTol = mesh.MeanEdgeLength * 1.35;
+        public static double[] ComputeExternalGeometryHeatDistance(
+            DdgMesh mesh,
+            IEnumerable<GeometryBase> externalGeometries,
+            double timeFactor,
+            out Vector3d[] smoothVertexGradients,
+            out Vector3d[] smoothFaceGradients,
+            out List<Point3d> resolvedSourcePoints,
+            out Mesh coloredMesh,
+            out double[] signedGeodesicDistance,
+            out Point3d farthestPoint)
+        {
+            int nV = mesh.VertexCount;
+            var sourceInitialDist = new Dictionary<int, double>();
+            resolvedSourcePoints = new List<Point3d>();
+            var activeCurves = new List<Curve>();
+            var closedMeshes = new List<Mesh>();
+            var closedBreps = new List<Brep>();
+
+            double h = mesh.MeanEdgeLength;
+            double snapTol = h * 1.45;
+
+            void AddOrUpdateSeed(int vIdx, double d0)
+            {
+                if (vIdx < 0 || vIdx >= nV) return;
+                d0 = Math.Max(0.0, d0);
+                if (!sourceInitialDist.TryGetValue(vIdx, out double prev) || d0 < prev)
+                    sourceInitialDist[vIdx] = d0;
+            }
 
             if (externalGeometries != null)
             {
@@ -2529,83 +2562,205 @@ namespace CraneGH.Core
                     if (geom is Rhino.Geometry.Point ptGeom)
                     {
                         int vIdx = mesh.FindClosestVertex(ptGeom.Location);
-                        sourceSet.Add(vIdx);
+                        AddOrUpdateSeed(vIdx, 0.0);
                     }
                     else if (geom is Curve crv && crv.IsValid)
                     {
-                        // Sample curve densely and find all mesh vertices along/near the curve
-                        int sampleCount = Math.Max(32, (int)(crv.GetLength() / Math.Max(1e-4, 0.4 * mesh.MeanEdgeLength)));
-                        sampleCount = Math.Min(400, sampleCount);
+                        activeCurves.Add(crv);
+                        // 1. Sample curve densely and snap closest mesh vertices with their exact sub-edge distance to the curve
+                        int sampleCount = Math.Max(48, (int)(crv.GetLength() / Math.Max(1e-4, 0.35 * h)));
+                        sampleCount = Math.Min(600, sampleCount);
                         crv.DivideByCount(sampleCount, true, out Point3d[] crvPts);
                         if (crvPts != null)
                         {
                             foreach (Point3d cp in crvPts)
                             {
-                                int vIdx = mesh.FindClosestVertex(cp);
-                                sourceSet.Add(vIdx);
+                                MeshPoint mp = mesh.RhinoMesh.ClosestMeshPoint(cp, snapTol * 2.0);
+                                if (mp != null)
+                                {
+                                    MeshFace mf = mesh.RhinoMesh.Faces[mp.FaceIndex];
+                                    int[] corners = { mf.A, mf.B, mf.C };
+                                    foreach (int vi in corners)
+                                    {
+                                        double dToCrv = mesh.Positions[vi].DistanceTo(cp);
+                                        if (crv.ClosestPoint(mesh.Positions[vi], out double tc))
+                                            dToCrv = Math.Min(dToCrv, mesh.Positions[vi].DistanceTo(crv.PointAt(tc)));
+                                        AddOrUpdateSeed(vi, dToCrv);
+                                    }
+                                }
+                                else
+                                {
+                                    int vIdx = mesh.FindClosestVertex(cp);
+                                    AddOrUpdateSeed(vIdx, 0.0);
+                                }
                             }
                         }
-                        // Also include any mesh vertex whose distance to the curve is <= snapTol
+
+                        // 2. Include all mesh vertices within snapTol of the curve with their exact distance to the curve
                         for (int i = 0; i < nV; i++)
                         {
                             if (crv.ClosestPoint(mesh.Positions[i], out double tParam, snapTol))
-                                sourceSet.Add(i);
+                            {
+                                double dExact = mesh.Positions[i].DistanceTo(crv.PointAt(tParam));
+                                AddOrUpdateSeed(i, dExact);
+                            }
+                        }
+
+                        // 3. Ensure at least the closest vertex to the curve has d0 = 0.0 so minimum distance on the curve is 0.0
+                        if (crvPts != null && crvPts.Length > 0)
+                        {
+                            foreach (Point3d cp in crvPts)
+                            {
+                                int vClosest = mesh.FindClosestVertex(cp);
+                                if (mesh.Positions[vClosest].DistanceTo(cp) <= 0.85 * h)
+                                    AddOrUpdateSeed(vClosest, 0.0);
+                            }
                         }
                     }
                     else if (geom is Mesh extMesh && extMesh.Vertices.Count > 0)
                     {
+                        if (extMesh.IsClosed) closedMeshes.Add(extMesh);
                         for (int i = 0; i < nV; i++)
                         {
                             Point3d cp = extMesh.ClosestPoint(mesh.Positions[i]);
-                            if (cp.DistanceTo(mesh.Positions[i]) <= snapTol * 1.5)
-                                sourceSet.Add(i);
+                            double d = cp.DistanceTo(mesh.Positions[i]);
+                            if (d <= snapTol * 1.5)
+                                AddOrUpdateSeed(i, d <= 0.65 * h ? 0.0 : d);
                         }
-                        if (sourceSet.Count == 0)
+                        if (sourceInitialDist.Count == 0)
                         {
                             int stride = Math.Max(1, extMesh.Vertices.Count / 80);
                             for (int k = 0; k < extMesh.Vertices.Count; k += stride)
-                                sourceSet.Add(mesh.FindClosestVertex(extMesh.Vertices.Point3dAt(k)));
+                                AddOrUpdateSeed(mesh.FindClosestVertex(extMesh.Vertices.Point3dAt(k)), 0.0);
                         }
                     }
                     else if (geom is Brep brep && brep.IsValid)
                     {
+                        if (brep.IsSolid) closedBreps.Add(brep);
                         for (int i = 0; i < nV; i++)
                         {
                             Point3d cp = brep.ClosestPoint(mesh.Positions[i]);
-                            if (cp.DistanceTo(mesh.Positions[i]) <= snapTol * 1.5)
-                                sourceSet.Add(i);
+                            double d = cp.DistanceTo(mesh.Positions[i]);
+                            if (d <= snapTol * 1.5)
+                                AddOrUpdateSeed(i, d <= 0.65 * h ? 0.0 : d);
                         }
-                        if (sourceSet.Count == 0 && brep.Vertices.Count > 0)
+                        if (sourceInitialDist.Count == 0 && brep.Vertices.Count > 0)
                         {
                             foreach (var bv in brep.Vertices)
-                                sourceSet.Add(mesh.FindClosestVertex(bv.Location));
+                                AddOrUpdateSeed(mesh.FindClosestVertex(bv.Location), 0.0);
                         }
                     }
                     else
                     {
                         BoundingBox gb = geom.GetBoundingBox(false);
                         if (gb.IsValid)
-                            sourceSet.Add(mesh.FindClosestVertex(gb.Center));
+                            AddOrUpdateSeed(mesh.FindClosestVertex(gb.Center), 0.0);
                     }
                 }
             }
 
-            // Fallback: if no external geometry provided, use naked boundary vertices (or vertex 0)
-            if (sourceSet.Count == 0)
+            // Default when no source geometry is provided: ALL Naked Boundary Edges of the mesh have d0 = 0.0!
+            if (sourceInitialDist.Count == 0)
             {
                 for (int i = 0; i < nV; i++)
-                    if (mesh.VertexOnBoundary[i]) sourceSet.Add(i);
-                if (sourceSet.Count == 0 && nV > 0)
-                    sourceSet.Add(0);
+                {
+                    if (mesh.VertexOnBoundary[i])
+                        AddOrUpdateSeed(i, 0.0);
+                }
+                if (sourceInitialDist.Count == 0 && nV > 0)
+                    AddOrUpdateSeed(0, 0.0);
+            }
+            else
+            {
+                // Shift minimum seed d0 to 0.0 so the curve / source starts at exact 0.0 on the mesh
+                double minSeedD = double.MaxValue;
+                foreach (var kv in sourceInitialDist)
+                    if (kv.Value < minSeedD) minSeedD = kv.Value;
+                if (minSeedD > 0.0 && minSeedD < double.MaxValue)
+                {
+                    var keys = new List<int>(sourceInitialDist.Keys);
+                    foreach (int k in keys)
+                        sourceInitialDist[k] = Math.Max(0.0, sourceInitialDist[k] - minSeedD);
+                }
             }
 
-            foreach (int vIdx in sourceSet)
-                resolvedSourcePoints.Add(mesh.Positions[vIdx]);
+            var srcVertList = new List<int>(sourceInitialDist.Count);
+            var srcDistList = new List<double>(sourceInitialDist.Count);
+            foreach (var kv in sourceInitialDist)
+            {
+                srcVertList.Add(kv.Key);
+                srcDistList.Add(kv.Value);
+                if (kv.Value <= 0.65 * h)
+                    resolvedSourcePoints.Add(mesh.Positions[kv.Key]);
+            }
+            if (resolvedSourcePoints.Count == 0)
+            {
+                foreach (int vIdx in srcVertList)
+                    resolvedSourcePoints.Add(mesh.Positions[vIdx]);
+            }
 
-            double[] dist = ComputeHeatDistance(mesh, sourceSet, timeFactor, out Vector3d[] rawFaceGrad, out Vector3d[] rawVertGrad);
+            double[] dist = ComputeHeatDistance(
+                mesh, srcVertList, timeFactor,
+                out Vector3d[] rawFaceGrad,
+                out Vector3d[] rawVertGrad,
+                srcDistList);
+
+            // Find the Farthest Point on the mesh from the source curve / naked boundary
+            int farthestIdx = 0;
+            double maxDist = -1.0;
+            for (int i = 0; i < nV; i++)
+            {
+                if (dist[i] > maxDist)
+                {
+                    maxDist = dist[i];
+                    farthestIdx = i;
+                }
+            }
+            farthestPoint = nV > 0 ? mesh.Positions[farthestIdx] : Point3d.Origin;
+
+            // Compute Signed Geodesic Distance (The Signed Heat Method, Feng & Crane SIGGRAPH 2024):
+            // If curves are provided on the mesh, use Surface Winding Number w in [0, 1] around the oriented curves
+            // so one side of the curve is +d(v), the other side is -d(v), and the curve is the exact 0-level set!
+            signedGeodesicDistance = new double[nV];
+            if (activeCurves.Count > 0)
+            {
+                double[] winding = ComputeSurfaceWindingNumberAndTrim(mesh, activeCurves, out _, out _, out _);
+                for (int i = 0; i < nV; i++)
+                {
+                    // Smooth sign transition across the curve zero-level set
+                    double sgn = winding[i] >= 0.5 ? 1.0 : -1.0;
+                    signedGeodesicDistance[i] = sgn * dist[i];
+                }
+            }
+            else if (closedMeshes.Count > 0 || closedBreps.Count > 0)
+            {
+                for (int i = 0; i < nV; i++)
+                {
+                    Point3d p = mesh.Positions[i];
+                    bool inside = false;
+                    foreach (var cm in closedMeshes)
+                        if (cm.IsPointInside(p, 1e-4, false)) { inside = true; break; }
+                    if (!inside)
+                    {
+                        foreach (var cb in closedBreps)
+                            if (cb.IsPointInside(p, 1e-4, false)) { inside = true; break; }
+                    }
+                    signedGeodesicDistance[i] = (inside ? -1.0 : 1.0) * dist[i];
+                }
+            }
+            else
+            {
+                Array.Copy(dist, signedGeodesicDistance, nV);
+            }
 
             // Smooth & redistribute the scalar gradient via Connection Laplacian so gradient flow is clean and evenly distributed
-            smoothVertexGradients = SmoothNRoSyVectorField(mesh, rawVertGrad, Math.Max(0.8, timeFactor), 1, out smoothFaceGradients, out _, out _);
+            smoothVertexGradients = SmoothNRoSyVectorField(mesh, rawVertGrad, Math.Max(0.6, timeFactor), 1, out smoothFaceGradients, out _, out _);
+            // Ensure gradient direction aligns positively with increasing distance d (pointing toward farthest point)
+            for (int i = 0; i < nV; i++)
+            {
+                if ((smoothVertexGradients[i] * rawVertGrad[i]) < 0.0)
+                    smoothVertexGradients[i] = -smoothVertexGradients[i];
+            }
             coloredMesh = ColorMeshByScalar(mesh.RhinoMesh, dist, false);
             return dist;
         }
@@ -6743,6 +6898,835 @@ namespace CraneGH.Core
 
             coloredMesh = ColorMeshByPalette(outMesh, bendingEnergyDensity, 0);
             return outMesh;
+        }
+
+        // =========================================================================================
+        // 40. CGAL SHAPE DIAMETER FUNCTION (SDF) & DIHEDRAL CREASE GRAPH-CUT SEGMENTATION
+        //     (CGAL Triangulated Surface Mesh Segmentation: Shapira et al. 2008 + Boykov-Kolmogorov
+        //      Log-Likelihood Alpha-Expansion with Dihedral Crease & Concavity Weights)
+        // =========================================================================================
+        public static List<Mesh> ComputeCgalSdfAndCreaseGraphCutSegmentation(
+            DdgMesh mesh,
+            int clusterCountK,
+            double creaseAndConcavityWeight,
+            out List<Polyline> boundarySeams,
+            out double[] vertexSdfField,
+            out Mesh coloredSegmentedMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            int K = Math.Max(2, Math.Min(nF, clusterCountK));
+
+            // 1. Compute Shape Diameter Function (SDF) per face:
+            //    Cast a cone of interior rays around the inward face normal -N_f and combine with
+            //    interior Shrinking-Ball medial thickness so SDF is fast and robust on both closed & open meshes!
+            double[] inscribedR = ComputeRollingSpheresAndOffset(mesh, 0.0, false, 8, out _, out _, out _, out _);
+            double[] faceSdf = new double[nF];
+            BoundingBox bbox = mesh.RhinoMesh.GetBoundingBox(false);
+            double diag = Math.Max(1e-5, bbox.Diagonal.Length);
+
+            // Cone directions in local tangent frame (opening angle ~ 40 deg)
+            double[,] coneOffsets = new double[,]
+            {
+                { 0.0, 0.0, 1.0 },
+                { 0.35, 0.0, 0.936 },
+                { -0.35, 0.0, 0.936 },
+                { 0.0, 0.35, 0.936 },
+                { 0.0, -0.35, 0.936 }
+            };
+
+            int rayStride = Math.Max(1, nF / 1200);
+            for (int f = 0; f < nF; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                double medialDiam = 2.0 * (inscribedR[fv[0]] + inscribedR[fv[1]] + inscribedR[fv[2]]) / 3.0;
+
+                if (f % rayStride == 0)
+                {
+                    Point3d origin = mesh.FaceCenters[f] - (0.05 * mesh.MeanEdgeLength) * mesh.FaceNormals[f];
+                    Vector3d inNorm = -mesh.FaceNormals[f];
+                    Vector3d tx = mesh.TangentBasisX[fv[0]];
+                    Vector3d ty = Vector3d.CrossProduct(inNorm, tx);
+                    if (ty.Length > 1e-12) ty.Unitize();
+
+                    double sumDist = 0.0;
+                    int validRays = 0;
+                    for (int r = 0; r < 5; r++)
+                    {
+                        Vector3d dir = coneOffsets[r, 0] * tx + coneOffsets[r, 1] * ty + coneOffsets[r, 2] * inNorm;
+                        if (!dir.Unitize()) continue;
+                        var ray = new Ray3d(origin, dir);
+                        double tHit = Rhino.Geometry.Intersect.Intersection.MeshRay(mesh.RhinoMesh, ray);
+                        if (tHit > 1e-5 && tHit < diag * 1.5)
+                        {
+                            sumDist += tHit;
+                            validRays++;
+                        }
+                    }
+                    faceSdf[f] = validRays > 0 ? (0.65 * (sumDist / validRays) + 0.35 * medialDiam) : medialDiam;
+                }
+                else
+                {
+                    faceSdf[f] = medialDiam;
+                }
+            }
+
+            // Smooth and log-normalize SDF across faces (CGAL Section 2.1 Log-Normalization)
+            double minSdf = double.MaxValue, maxSdf = double.MinValue;
+            for (int f = 0; f < nF; f++)
+            {
+                if (faceSdf[f] < minSdf) minSdf = faceSdf[f];
+                if (faceSdf[f] > maxSdf) maxSdf = faceSdf[f];
+            }
+            double spanSdf = Math.Max(1e-9, maxSdf - minSdf);
+            const double alphaLog = 4.0;
+            double logDenom = Math.Log(alphaLog + 1.0);
+            for (int f = 0; f < nF; f++)
+            {
+                double norm = (faceSdf[f] - minSdf) / spanSdf;
+                faceSdf[f] = Math.Log(norm * alphaLog + 1.0) / logDenom;
+            }
+
+            // Map faceSdf to vertexSdfField and lightly smooth
+            double[] rawVertSdf = mesh.MapScalarInputToVertices(faceSdf);
+            vertexSdfField = SmoothScalarField(mesh, rawVertSdf, 1.2, Math.Max(0.5, creaseAndConcavityWeight), out _, out _);
+            for (int f = 0; f < nF; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                faceSdf[f] = (vertexSdfField[fv[0]] + vertexSdfField[fv[1]] + vertexSdfField[fv[2]]) / 3.0;
+            }
+
+            // 2. Build Dual Face Adjacency Graph with CGAL Log-Dihedral Crease & Concavity Weights:
+            //    In CGAL Surface_mesh_segmentation, concave dihedral angles and sharp creases have
+            //    dramatically lower cut cost so graph-cut boundaries lock onto creases & concave necks!
+            var adjFaces = new List<(int nbFace, double cutPenalty, double GeoDist)>[nF];
+            for (int f = 0; f < nF; f++) adjFaces[f] = new List<(int, double, double)>(3);
+
+            double lambdaCrease = Math.Max(0.1, creaseAndConcavityWeight);
+            foreach (var e in mesh.Edges)
+            {
+                if (e.HalfEdge1 == -1) continue;
+                int f0 = mesh.HalfEdges[e.HalfEdge0].FaceIndex;
+                int f1 = mesh.HalfEdges[e.HalfEdge1].FaceIndex;
+
+                // Dihedral angle in [0, pi]; concave edges (SignedDihedralAngle < 0) and sharp creases (>= 22 deg) get strong cut preference!
+                double theta = Math.Max(0.0, Math.Min(Math.PI, e.DihedralAngle));
+                bool isConcave = e.SignedDihedralAngle < -0.02;
+                bool isSharpCrease = theta >= (22.0 * Math.PI / 180.0);
+                double effectiveTheta = isConcave ? Math.Min(Math.PI, theta * 2.2) : (isSharpCrease ? Math.Min(Math.PI, theta * 1.6) : theta * 0.35);
+
+                // CGAL log dihedral weight: w(e) = 1 - log10(effectiveTheta / pi + eps) / log10(eps) in [0.02, 1.0]
+                const double eps = 1e-3;
+                double logWeight = 1.0 - Math.Log10((effectiveTheta / Math.PI) + eps) / Math.Log10(eps);
+                logWeight = Math.Max(0.02, Math.Min(1.0, logWeight));
+                if (isSharpCrease || isConcave)
+                    logWeight *= Math.Exp(-0.45 * lambdaCrease * (effectiveTheta / Math.PI));
+
+                double cutPenalty = e.Length * logWeight;
+                double geoStep = mesh.FaceCenters[f0].DistanceTo(mesh.FaceCenters[f1]) * (1.0 + lambdaCrease * (1.0 - logWeight) * 6.0);
+
+                adjFaces[f0].Add((f1, cutPenalty, geoStep));
+                adjFaces[f1].Add((f0, cutPenalty, geoStep));
+            }
+
+            // 3. Soft Clustering Initialization (GMM / K-Means++ on SDF + Crease-Geodesic Position + Normal)
+            var seedFaces = new List<int>(K) { 0 };
+            double[] minGeoDist = new double[nF];
+            for (int f = 0; f < nF; f++) minGeoDist[f] = double.MaxValue;
+
+            var dijkstraAdj = new List<(int, double)>[nF];
+            for (int f = 0; f < nF; f++)
+            {
+                dijkstraAdj[f] = new List<(int, double)>(adjFaces[f].Count);
+                foreach (var item in adjFaces[f])
+                    dijkstraAdj[f].Add((item.nbFace, item.GeoDist));
+            }
+
+            for (int s = 0; s < K; s++)
+            {
+                int latest = seedFaces[seedFaces.Count - 1];
+                double[] dLatest = RunFaceDijkstra(nF, dijkstraAdj, new int[] { latest }, out _);
+                int bestF = 0;
+                double maxScore = -1.0;
+                for (int f = 0; f < nF; f++)
+                {
+                    double sdfDiff = Math.Abs(faceSdf[f] - faceSdf[latest]);
+                    double combined = dLatest[f] * (1.0 + 1.5 * sdfDiff);
+                    if (combined < minGeoDist[f]) minGeoDist[f] = combined;
+                    if (minGeoDist[f] > maxScore)
+                    {
+                        maxScore = minGeoDist[f];
+                        bestF = f;
+                    }
+                }
+                if (s < K - 1) seedFaces.Add(bestF);
+            }
+
+            // Compute GMM cluster means (SDF mean, normal mean, geodesic distance profile)
+            int[] faceLabels = new int[nF];
+            RunFaceDijkstra(nF, dijkstraAdj, seedFaces, out faceLabels);
+
+            double[] clusterSdfMean = new double[K];
+            double[] clusterSdfStd = new double[K];
+            Vector3d[] clusterNormMean = new Vector3d[K];
+
+            // 4. Iterative Log-Likelihood Update + Alpha-Expansion Crease Graph-Cut Optimization
+            for (int outer = 0; outer < 4; outer++)
+            {
+                double[] areaSum = new double[K];
+                Array.Clear(clusterSdfMean, 0, K);
+                Array.Clear(clusterNormMean, 0, K);
+
+                for (int f = 0; f < nF; f++)
+                {
+                    int c = faceLabels[f];
+                    double a = mesh.FaceAreas[f];
+                    clusterSdfMean[c] += a * faceSdf[f];
+                    clusterNormMean[c] += a * mesh.FaceNormals[f];
+                    areaSum[c] += a;
+                }
+                for (int c = 0; c < K; c++)
+                {
+                    if (areaSum[c] > 1e-12)
+                    {
+                        clusterSdfMean[c] /= areaSum[c];
+                        if (clusterNormMean[c].Length > 1e-12) clusterNormMean[c].Unitize();
+                    }
+                    clusterSdfStd[c] = 0.12;
+                }
+
+                // Alpha-Expansion /ICM Graph-Cut sweeps minimizing Data Cost + Crease Cut Penalty
+                double[][] geoFromSeeds = new double[K][];
+                for (int c = 0; c < K; c++)
+                    geoFromSeeds[c] = RunFaceDijkstra(nF, dijkstraAdj, new int[] { seedFaces[c] }, out _);
+
+                for (int sweep = 0; sweep < 5; sweep++)
+                {
+                    int[] nextLbl = (int[])faceLabels.Clone();
+                    for (int f = 0; f < nF; f++)
+                    {
+                        int bestC = faceLabels[f];
+                        double bestEnergy = double.MaxValue;
+
+                        for (int c = 0; c < K; c++)
+                        {
+                            // Log-likelihood Data Cost: SDF Gaussian negative log-likelihood + Crease-Geodesic compactness + Normal coherence
+                            double zSdf = (faceSdf[f] - clusterSdfMean[c]) / clusterSdfStd[c];
+                            double dataCost = mesh.FaceAreas[f] * (0.45 * zSdf * zSdf
+                                + 1.25 * (geoFromSeeds[c][f] / diag)
+                                + 0.35 * lambdaCrease * (1.0 - (mesh.FaceNormals[f] * clusterNormMean[c])));
+
+                            // Smoothness / Graph-Cut Boundary Penalty across adjacent triangle edges
+                            double cutCost = 0.0;
+                            foreach (var nb in adjFaces[f])
+                            {
+                                if (faceLabels[nb.nbFace] != c)
+                                    cutCost += lambdaCrease * mesh.MeanEdgeLength * nb.cutPenalty;
+                            }
+
+                            double totalE = dataCost + cutCost;
+                            if (totalE < bestEnergy)
+                            {
+                                bestEnergy = totalE;
+                                bestC = c;
+                            }
+                        }
+                        nextLbl[f] = bestC;
+                    }
+                    faceLabels = nextLbl;
+                }
+            }
+
+            EnforceConnectedClusterRegions(mesh, faceLabels, K);
+
+            // Project seam vertices to taut geodesic/crease costuras while locking vertices that already lie on sharp creases!
+            Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 14);
+            Color[] palette = GenerateDistinctPalette(K);
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, K, palette, out coloredSegmentedMesh, seamPos);
+            boundarySeams = ExtractLabelBoundaryCurves(mesh, faceLabels, seamPos);
+
+            return subMeshes;
+        }
+
+        // =========================================================================================
+        // 41. SALIENT SPECTRAL & CONCAVITY CUT MESH SEGMENTATION
+        //     (Zhang & Liu VMV 2005 "Mesh Segmentation via Recursive and Visually Salient Spectral Cuts"
+        //      + Liu & Zhang Eurographics 2007 "Spectral Embedding and Contour Analysis"
+        //      + Hu & Zhang IMR 2016 "Secondary Laplace Operator & L_inf Boundary-Enhanced CVT")
+        // =========================================================================================
+        public static List<Mesh> ComputeSalientSpectralAndConcavitySegmentation(
+            DdgMesh mesh,
+            int targetPartCountK,
+            double concavityAndCreaseStrength,
+            out List<Polyline> salientCutSeams,
+            out double[] spectralEmbeddingField,
+            out Mesh coloredSegmentedMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            int K = Math.Max(2, Math.Min(nF, targetPartCountK));
+
+            // 1. Histogram-Equalized Dihedral Angle Distance H(f_i, f_j) in [0, 1] (Zhang & Liu VMV 2005 Section 3, Eq. 1):
+            //    Emphasizes the cognitive Minima Rule: eta = 1.0 for concave dihedral angles & sharp creases, eta = 0.1 for smooth convex!
+            int nE = mesh.EdgeCount;
+            double[] rawEdgeAngleCost = new double[nE];
+            var interiorEdgeIndices = new List<int>(nE);
+
+            for (int eIdx = 0; eIdx < nE; eIdx++)
+            {
+                var e = mesh.Edges[eIdx];
+                if (e.HalfEdge1 == -1) continue;
+                int f0 = mesh.HalfEdges[e.HalfEdge0].FaceIndex;
+                int f1 = mesh.HalfEdges[e.HalfEdge1].FaceIndex;
+
+                double cosTheta = Math.Max(-1.0, Math.Min(1.0, mesh.FaceNormals[f0] * mesh.FaceNormals[f1]));
+                bool isConcave = e.SignedDihedralAngle < -0.01;
+                bool isSharpCrease = e.DihedralAngle >= (24.0 * Math.PI / 180.0);
+                double eta = isConcave ? 1.0 : (isSharpCrease ? 0.85 : 0.10);
+                rawEdgeAngleCost[eIdx] = eta * (1.0 - cosTheta);
+                interiorEdgeIndices.Add(eIdx);
+            }
+
+            // Histogram equalization of rawEdgeAngleCost onto [0, 1]
+            double[] histEqAngle = new double[nE];
+            if (interiorEdgeIndices.Count > 0)
+            {
+                interiorEdgeIndices.Sort((a, b) => rawEdgeAngleCost[a].CompareTo(rawEdgeAngleCost[b]));
+                int mInt = interiorEdgeIndices.Count;
+                for (int rank = 0; rank < mInt; rank++)
+                {
+                    histEqAngle[interiorEdgeIndices[rank]] = mInt > 1 ? rank / (double)(mInt - 1) : 0.5;
+                }
+            }
+
+            // Dual graph combined distance d(f_i, f_j) = (1 - delta) * H(f_i, f_j) + delta * G(f_i, f_j) (Eq. 1)
+            double concWeight = Math.Max(0.1, concavityAndCreaseStrength);
+            double delta = 1.0 / (1.0 + 12.0 * concWeight);
+            double meanDualLen = Math.Max(1e-6, mesh.MeanEdgeLength * 0.65);
+
+            var dualAdj = new List<(int nbFace, double combinedDist, double histH, double edgeLen)>[nF];
+            for (int f = 0; f < nF; f++) dualAdj[f] = new List<(int, double, double, double)>(3);
+
+            for (int eIdx = 0; eIdx < nE; eIdx++)
+            {
+                var e = mesh.Edges[eIdx];
+                if (e.HalfEdge1 == -1) continue;
+                int f0 = mesh.HalfEdges[e.HalfEdge0].FaceIndex;
+                int f1 = mesh.HalfEdges[e.HalfEdge1].FaceIndex;
+
+                double gNorm = mesh.FaceCenters[f0].DistanceTo(mesh.FaceCenters[f1]) / meanDualLen;
+                double hVal = histEqAngle[eIdx];
+                double dComb = (1.0 - delta) * hVal + delta * gNorm;
+
+                dualAdj[f0].Add((f1, dComb, hVal, e.Length));
+                dualAdj[f1].Add((f0, dComb, hVal, e.Length));
+            }
+
+            // 2. Recursive 2-Way Salient Spectral Cut (Zhang & Liu VMV 2005 Figure 2 BESTCUT + Part Salience Eq. 3)
+            int[] faceLabels = new int[nF];
+            double[] globalSpectralZ = new double[nF];
+            int currentParts = 1;
+
+            for (int splitStep = 1; splitStep < K; splitStep++)
+            {
+                // Pick largest part by surface area to bisect
+                double[] partAreas = new double[currentParts];
+                var partFaces = new List<int>[currentParts];
+                for (int p = 0; p < currentParts; p++) partFaces[p] = new List<int>();
+
+                for (int f = 0; f < nF; f++)
+                {
+                    int p = faceLabels[f];
+                    partAreas[p] += mesh.FaceAreas[f];
+                    partFaces[p].Add(f);
+                }
+
+                int targetPart = -1;
+                double maxPartArea = -1.0;
+                for (int p = 0; p < currentParts; p++)
+                {
+                    if (partFaces[p].Count >= 6 && partAreas[p] > maxPartArea)
+                    {
+                        maxPartArea = partAreas[p];
+                        targetPart = p;
+                    }
+                }
+                if (targetPart == -1) break;
+
+                List<int> subFaces = partFaces[targetPart];
+                int mSub = subFaces.Count;
+                var inSub = new bool[nF];
+                foreach (int f in subFaces) inSub[f] = true;
+
+                // Build restricted dual graph for sub-mesh
+                var subDijkstra = new List<(int, double)>[nF];
+                for (int f = 0; f < nF; f++) subDijkstra[f] = new List<(int, double)>(3);
+                foreach (int f in subFaces)
+                {
+                    foreach (var nb in dualAdj[f])
+                        if (inSub[nb.nbFace])
+                            subDijkstra[f].Add((nb.nbFace, nb.combinedDist));
+                }
+
+                // Shape-Context Sampling of 2 perceptual extremity sample faces (f_s, f_t) (Section 4.1-4.2)
+                int kRef = Math.Min(8, mSub);
+                var refFaces = new List<int>(kRef) { subFaces[0] };
+                double[] minRefD = new double[nF];
+                for (int f = 0; f < nF; f++) minRefD[f] = double.MaxValue;
+                double[][] refDists = new double[kRef][];
+
+                for (int r = 0; r < kRef; r++)
+                {
+                    int rf = refFaces[r];
+                    refDists[r] = RunFaceDijkstra(nF, subDijkstra, new int[] { rf }, out _);
+                    int farthest = subFaces[0];
+                    double bestD = -1.0;
+                    foreach (int f in subFaces)
+                    {
+                        if (refDists[r][f] < minRefD[f]) minRefD[f] = refDists[r][f];
+                        if (minRefD[f] < 1e20 && minRefD[f] > bestD) { bestD = minRefD[f]; farthest = f; }
+                    }
+                    if (r < kRef - 1) refFaces.Add(farthest);
+                }
+
+                // First sample f_s = argmax ||c^(i)|| (most isolated peripheral/protruding part)
+                int fs = subFaces[0];
+                double maxNormC = -1.0;
+                foreach (int f in subFaces)
+                {
+                    double normSq = 0.0;
+                    for (int r = 0; r < kRef; r++)
+                    {
+                        double d = refDists[r][f] < 1e20 ? refDists[r][f] : 0.0;
+                        normSq += d * d;
+                    }
+                    if (normSq > maxNormC) { maxNormC = normSq; fs = f; }
+                }
+
+                // Second sample f_t = argmax ||c^(i) - c^(s)|| (least similar shape context to f_s)
+                int ft = subFaces[mSub - 1];
+                double maxDiffC = -1.0;
+                foreach (int f in subFaces)
+                {
+                    double diffSq = 0.0;
+                    for (int r = 0; r < kRef; r++)
+                    {
+                        double df = refDists[r][f] < 1e20 ? refDists[r][f] : 0.0;
+                        double ds = refDists[r][fs] < 1e20 ? refDists[r][fs] : 0.0;
+                        double diff = df - ds;
+                        diffSq += diff * diff;
+                    }
+                    if (diffSq > maxDiffC) { maxDiffC = diffSq; ft = f; }
+                }
+
+                // Compute partial distances W_1j (from f_s) and W_2j (from f_t) and 1D Nyström spectral coordinate z_j
+                double[] dFromS = RunFaceDijkstra(nF, subDijkstra, new int[] { fs }, out _);
+                double[] dFromT = RunFaceDijkstra(nF, subDijkstra, new int[] { ft }, out _);
+
+                double avgDist = 0.0;
+                int validCnt = 0;
+                foreach (int f in subFaces)
+                {
+                    if (dFromS[f] < 1e20 && dFromT[f] < 1e20)
+                    {
+                        avgDist += 0.5 * (dFromS[f] + dFromT[f]);
+                        validCnt++;
+                    }
+                }
+                double sigma = Math.Max(1e-5, validCnt > 0 ? avgDist / validCnt : 1.0);
+
+                // Linear spectral ordering z_f = (x_f - y_f) / (x_f + y_f) where x_f = exp(-d(s,f)/sigma), y_f = exp(-d(t,f)/sigma)
+                var orderedSub = new List<(int faceIdx, double zVal)>(mSub);
+                foreach (int f in subFaces)
+                {
+                    double x = Math.Exp(-(dFromS[f] < 1e20 ? dFromS[f] : sigma * 5.0) / sigma);
+                    double y = Math.Exp(-(dFromT[f] < 1e20 ? dFromT[f] : sigma * 5.0) / sigma);
+                    double z = (x - y) / Math.Max(1e-12, x + y);
+                    orderedSub.Add((f, z));
+                    globalSpectralZ[f] = splitStep + 0.45 * z;
+                }
+                orderedSub.Sort((a, b) => a.zVal.CompareTo(b.zVal));
+
+                // Line Search along 1D Spectral Embedding z maximizing Part Salience V(Q) = alpha*Vs + beta*Vc + gamma*Vp (Section 6, Eq. 3)
+                int minIdx = Math.Max(1, (int)(0.12 * mSub));
+                int maxIdx = Math.Min(mSub - 2, (int)(0.88 * mSub));
+                int bestSplitIdx = mSub / 2;
+                double bestSalience = -1e20;
+                int searchStride = Math.Max(1, (maxIdx - minIdx) / 60);
+
+                var inSideA = new bool[nF];
+                for (int i = 0; i < minIdx; i++)
+                    inSideA[orderedSub[i].faceIdx] = true;
+
+                for (int idx = minIdx; idx <= maxIdx; idx += searchStride)
+                {
+                    for (int k = Math.Max(minIdx, idx - searchStride + 1); k <= idx; k++)
+                        inSideA[orderedSub[k].faceIdx] = true;
+
+                    double areaA = 0.0;
+                    for (int i = 0; i <= idx; i++)
+                        areaA += mesh.FaceAreas[orderedSub[i].faceIdx];
+                    double areaQ = Math.Min(areaA, maxPartArea - areaA);
+                    double vS = areaQ / Math.Max(1e-12, maxPartArea); // Size salience Vs(Q)
+
+                    // Cut strength Vc(Q) and Cut Perimeter across cut boundary dQ
+                    double sumCutH = 0.0;
+                    double cutLen = 0.0;
+                    int cutEdges = 0;
+                    foreach (int f in subFaces)
+                    {
+                        if (!inSideA[f]) continue;
+                        foreach (var nb in dualAdj[f])
+                        {
+                            if (inSub[nb.nbFace] && !inSideA[nb.nbFace])
+                            {
+                                sumCutH += nb.histH;
+                                cutLen += nb.edgeLen;
+                                cutEdges++;
+                            }
+                        }
+                    }
+
+                    double vC = cutEdges > 0 ? (sumCutH / cutEdges) : 0.0;
+                    // Protrusiveness Vp(Q): ratio of smaller part area to cut boundary squared length
+                    double vP = areaQ / Math.Max(1e-12, areaQ + cutLen * cutLen * 0.25);
+
+                    // Zhang & Liu Section 6 weights: alpha = 0.15, beta = 0.55 (cut strength on concavities/creases), gamma = 0.30
+                    double salience = 0.15 * vS + 0.55 * vC + 0.30 * vP;
+                    if (salience > bestSalience)
+                    {
+                        bestSalience = salience;
+                        bestSplitIdx = idx;
+                    }
+                }
+
+                int newLabel = currentParts;
+                for (int i = bestSplitIdx + 1; i < mSub; i++)
+                    faceLabels[orderedSub[i].faceIdx] = newLabel;
+                currentParts++;
+            }
+
+            // 3. L_infinity Boundary-Enhanced CVT Refinement in Spectral + Concavity Space
+            //    (Hu, Zhang et al. IMR 2016 Eq. 14: dist(psi_i, c_k) = sqrt(||psi_i - c_k||_inf^2 + lambda * n_tilde_k(x_i)))
+            spectralEmbeddingField = mesh.MapScalarInputToVertices(globalSpectralZ);
+            spectralEmbeddingField = SmoothScalarField(mesh, spectralEmbeddingField, 0.8, concWeight, out _, out _);
+
+            EnforceConnectedClusterRegions(mesh, faceLabels, currentParts);
+
+            Point3d[] seamPos = ProjectSeamVerticesToGeodesicCostura(mesh, faceLabels, 16);
+            Color[] palette = GenerateDistinctPalette(currentParts);
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, faceLabels, currentParts, palette, out coloredSegmentedMesh, seamPos);
+            salientCutSeams = ExtractLabelBoundaryCurves(mesh, faceLabels, seamPos);
+
+            return subMeshes;
+        }
+
+        // =========================================================================================
+        // 42. CURVATURE TENSOR & SHARP CREASE MESH SEGMENTATION WITH BOUNDARY RECTIFICATION
+        //     (Lavoué, Dupont, Baskurt LIRIS-1815 "Curvature tensor based Triangle Mesh Segmentation
+        //      with Boundary Rectification" — CAD & Mold Crease Segmentation)
+        // =========================================================================================
+        public static List<Mesh> ComputeCurvatureTensorRectifiedSegmentation(
+            DdgMesh mesh,
+            int targetPatchCountK,
+            double sharpCreaseAngleDeg,
+            out List<Polyline> rectifiedBoundaries,
+            out List<Polyline> detectedSharpCreases,
+            out Mesh coloredSegmentedMesh)
+        {
+            int nV = mesh.VertexCount;
+            int nF = mesh.FaceCount;
+            int targetK = Math.Max(2, Math.Min(nF, targetPatchCountK));
+
+            // 1. Sharp Features Detection (LIRIS-1815 Section 4.1):
+            //    An edge shared by two triangles whose normal vectors make an angle >= sharpCreaseAngleDeg is a Sharp Edge!
+            double creaseRad = Math.Max(2.0, sharpCreaseAngleDeg) * (Math.PI / 180.0);
+            bool[] isSharpEdge = new bool[mesh.EdgeCount];
+            bool[] isSharpVertex = new bool[nV];
+            var sharpLines = new List<Line>();
+
+            for (int eIdx = 0; eIdx < mesh.EdgeCount; eIdx++)
+            {
+                var e = mesh.Edges[eIdx];
+                if (e.HalfEdge1 == -1 || e.DihedralAngle >= creaseRad)
+                {
+                    isSharpEdge[eIdx] = true;
+                    isSharpVertex[e.V0] = true;
+                    isSharpVertex[e.V1] = true;
+                    if (e.HalfEdge1 != -1)
+                        sharpLines.Add(new Line(mesh.Positions[e.V0], mesh.Positions[e.V1]));
+                }
+            }
+
+            detectedSharpCreases = new List<Polyline>();
+            if (sharpLines.Count > 0)
+            {
+                Curve[] joined = Curve.JoinCurves(sharpLines.ConvertAll(l => (Curve)new LineCurve(l)), mesh.MeanEdgeLength * 1e-3);
+                if (joined != null)
+                {
+                    foreach (var c in joined)
+                        if (c.TryGetPolyline(out Polyline pl))
+                            detectedSharpCreases.Add(pl);
+                }
+            }
+
+            // 2. Principal Curvature Tensor Estimation (K_max, |K_min|, d_max, d_min) per vertex (Section 4.2.1)
+            double[] kMax = new double[nV];
+            double[] kMinAbs = new double[nV];
+            Vector3d[] dMax = new Vector3d[nV];
+            Vector3d[] dMin = new Vector3d[nV];
+
+            for (int v = 0; v < nV; v++)
+            {
+                double H = mesh.MeanCurvature[v];
+                double K = mesh.GaussianCurvature[v] / Math.Max(1e-12, mesh.DualAreas[v]);
+                double disc = Math.Max(0.0, H * H - K);
+                double root = Math.Sqrt(disc);
+                double k1 = H + root;
+                double k2 = H - root;
+                if (Math.Abs(k1) >= Math.Abs(k2))
+                {
+                    kMax[v] = Math.Abs(k1);
+                    kMinAbs[v] = Math.Abs(k2);
+                }
+                else
+                {
+                    kMax[v] = Math.Abs(k2);
+                    kMinAbs[v] = Math.Abs(k1);
+                }
+                dMax[v] = mesh.PrincipalDir[v];
+                dMin[v] = Vector3d.CrossProduct(mesh.VertexNormals[v], dMax[v]);
+                if (!dMin[v].Unitize()) dMin[v] = mesh.TangentBasisY[v];
+            }
+
+            // Smooth K_max and |K_min| stopping strictly across Sharp Creases so curvature patches are clean!
+            kMax = SmoothScalarField(mesh, kMax, 1.5, 8.0, out _, out _);
+            kMinAbs = SmoothScalarField(mesh, kMinAbs, 1.5, 8.0, out _, out _);
+
+            // Normalize (kMax, kMinAbs) to [0, 1]^2 for K-Means Curvature Classification (Section 4.2.2)
+            double maxK1 = 1e-12, maxK2 = 1e-12;
+            for (int v = 0; v < nV; v++)
+            {
+                if (!isSharpVertex[v])
+                {
+                    if (kMax[v] > maxK1) maxK1 = kMax[v];
+                    if (kMinAbs[v] > maxK2) maxK2 = kMinAbs[v];
+                }
+            }
+            Point2d[] faceCurvVec = new Point2d[nF];
+            for (int f = 0; f < nF; f++)
+            {
+                int[] fv = mesh.Faces[f];
+                double c1 = (Math.Min(maxK1, kMax[fv[0]]) + Math.Min(maxK1, kMax[fv[1]]) + Math.Min(maxK1, kMax[fv[2]])) / (3.0 * maxK1);
+                double c2 = (Math.Min(maxK2, kMinAbs[fv[0]]) + Math.Min(maxK2, kMinAbs[fv[1]]) + Math.Min(maxK2, kMinAbs[fv[2]])) / (3.0 * maxK2);
+                faceCurvVec[f] = new Point2d(c1, c2);
+            }
+
+            // 3. Triangle Region Growing Blocked by Sharp Crease Edges + Curvature Similarity (Section 4.3)
+            //    First find connected smooth components bounded by sharp edges; if a component is large, sub-cluster by curvature + normal
+            int[] regionId = new int[nF];
+            for (int f = 0; f < nF; f++) regionId[f] = -1;
+            int numInitialRegions = 0;
+
+            // Pre-classify vertices into K_curv = 6 curvature classes
+            int kCurvClasses = Math.Max(4, Math.Min(10, targetK));
+            int[] faceCurvClass = new int[nF];
+            for (int f = 0; f < nF; f++)
+            {
+                double score = 0.65 * faceCurvVec[f].X + 0.35 * faceCurvVec[f].Y;
+                faceCurvClass[f] = Math.Max(0, Math.Min(kCurvClasses - 1, (int)(score * kCurvClasses)));
+            }
+
+            var queue = new Queue<int>();
+            for (int f = 0; f < nF; f++)
+            {
+                if (regionId[f] != -1) continue;
+                int rid = numInitialRegions++;
+                int seedClass = faceCurvClass[f];
+                Vector3d seedNorm = mesh.FaceNormals[f];
+                regionId[f] = rid;
+                queue.Enqueue(f);
+
+                while (queue.Count > 0)
+                {
+                    int cur = queue.Dequeue();
+                    for (int k = 0; k < 3; k++)
+                    {
+                        var he = mesh.HalfEdges[cur * 3 + k];
+                        if (he.Twin == -1) continue;
+                        // Hard stop at Sharp Crease Edges!
+                        if (isSharpEdge[he.EdgeIndex]) continue;
+
+                        int nb = mesh.HalfEdges[he.Twin].FaceIndex;
+                        if (regionId[nb] != -1) continue;
+
+                        // Grow across non-sharp edges that share the curvature class or close normal alignment
+                        if (faceCurvClass[nb] == seedClass || (mesh.FaceNormals[nb] * seedNorm) > 0.75)
+                        {
+                            regionId[nb] = rid;
+                            queue.Enqueue(nb);
+                        }
+                    }
+                }
+            }
+
+            // If the mesh had fewer initial regions than targetK (e.g. a single smooth region or fewer sharp loops than K),
+            // split the largest regions using Crease-Aware K-Means so we have at least targetK * 2 regions before RAG merging!
+            if (numInitialRegions < targetK)
+            {
+                ComputeKMeansNormalVectorSegmentation(
+                    mesh, targetK, 4.0, 1.5, 0.0, 6.0, null, null,
+                    out _, out _, out _, out regionId, out _);
+                numInitialRegions = targetK;
+            }
+
+            // 4. Region Adjacency Graph (RAG) Merging Process (LIRIS-1815 Section 4.4, Eq. 1-4):
+            //    Iteratively merge the pair of adjacent regions (R_i, R_j) with smallest distance:
+            //    D_ij = DC_ij * N_ij * S_ij, where DC_ij = ||c_i - c_ij|| + ||c_j - c_ij|| + sharpCreasePenalty
+            int activeRegionCount = numInitialRegions;
+            if (activeRegionCount > targetK)
+            {
+                // Map region IDs to compact 0..R-1
+                double[] regArea = new double[numInitialRegions];
+                Point2d[] regCurv = new Point2d[numInitialRegions];
+                Vector3d[] regNorm = new Vector3d[numInitialRegions];
+                double totalMeshArea = 0.0;
+
+                for (int f = 0; f < nF; f++)
+                {
+                    int r = regionId[f];
+                    double a = mesh.FaceAreas[f];
+                    regArea[r] += a;
+                    regCurv[r] += a * faceCurvVec[f];
+                    regNorm[r] += a * mesh.FaceNormals[f];
+                    totalMeshArea += a;
+                }
+                for (int r = 0; r < numInitialRegions; r++)
+                {
+                    if (regArea[r] > 1e-12)
+                    {
+                        regCurv[r] /= regArea[r];
+                        if (regNorm[r].Length > 1e-12) regNorm[r].Unitize();
+                    }
+                }
+
+                double aMin = (totalMeshArea / targetK) * 0.18;
+                int[] parentReg = new int[numInitialRegions];
+                for (int r = 0; r < numInitialRegions; r++) parentReg[r] = r;
+
+                int FindRoot(int r)
+                {
+                    while (parentReg[r] != r)
+                        r = parentReg[r] = parentReg[parentReg[r]];
+                    return r;
+                }
+
+                while (activeRegionCount > targetK)
+                {
+                    // Evaluate RAG edges between adjacent regions
+                    var commonBorder = new Dictionary<(int, int), (double len, double sharpLen, Point2d sumBndCurv, int edgeCnt)>();
+                    double[] perim = new double[numInitialRegions];
+
+                    for (int eIdx = 0; eIdx < mesh.EdgeCount; eIdx++)
+                    {
+                        var e = mesh.Edges[eIdx];
+                        if (e.HalfEdge1 == -1) continue;
+                        int r0 = FindRoot(regionId[mesh.HalfEdges[e.HalfEdge0].FaceIndex]);
+                        int r1 = FindRoot(regionId[mesh.HalfEdges[e.HalfEdge1].FaceIndex]);
+                        if (r0 == r1) continue;
+
+                        perim[r0] += e.Length;
+                        perim[r1] += e.Length;
+                        var key = r0 < r1 ? (r0, r1) : (r1, r0);
+                        Point2d eCurv = 0.5 * (faceCurvVec[mesh.HalfEdges[e.HalfEdge0].FaceIndex] + faceCurvVec[mesh.HalfEdges[e.HalfEdge1].FaceIndex]);
+                        if (isSharpEdge[eIdx]) eCurv += new Point2d(2.5, 2.5); // High boundary curvature on sharp creases (Fig. 9b!)
+
+                        if (commonBorder.TryGetValue(key, out var cur))
+                            commonBorder[key] = (cur.len + e.Length, cur.sharpLen + (isSharpEdge[eIdx] ? e.Length : 0.0), cur.sumBndCurv + eCurv, cur.edgeCnt + 1);
+                        else
+                            commonBorder[key] = (e.Length, isSharpEdge[eIdx] ? e.Length : 0.0, eCurv, 1);
+                    }
+
+                    if (commonBorder.Count == 0) break;
+
+                    int bestA = -1, bestB = -1;
+                    double bestDij = double.MaxValue;
+
+                    foreach (var kv in commonBorder)
+                    {
+                        int ri = kv.Key.Item1;
+                        int rj = kv.Key.Item2;
+                        double pIJ = Math.Max(1e-9, kv.Value.len);
+                        Point2d cIJ = kv.Value.sumBndCurv / Math.Max(1, kv.Value.edgeCnt);
+
+                        // Eq. (2): DC_ij = ||c_i - c_ij|| + ||c_j - c_ij|| + normal angle + sharp crease barrier
+                        double dcIJ = regCurv[ri].DistanceTo(cIJ) + regCurv[rj].DistanceTo(cIJ)
+                                    + 0.8 * (1.0 - Math.Max(-1.0, Math.Min(1.0, regNorm[ri] * regNorm[rj])))
+                                    + 12.0 * (kv.Value.sharpLen / pIJ);
+
+                        // Eq. (3): Nesting coefficient N_ij = min(P_i, P_j) / P_ij
+                        double nIJ = Math.Min(perim[ri], perim[rj]) / pIJ;
+
+                        // Eq. (4): Small-region filtering factor S_ij
+                        double sIJ = (regArea[ri] < aMin || regArea[rj] < aMin) ? 1e-3 : 1.0;
+
+                        double dIJ = (dcIJ + 1e-4) * nIJ * sIJ;
+                        if (dIJ < bestDij)
+                        {
+                            bestDij = dIJ;
+                            bestA = ri;
+                            bestB = rj;
+                        }
+                    }
+
+                    if (bestA == -1 || bestB == -1) break;
+
+                    // Merge bestB into bestA proportionally to their areas (Section 4.4.2)
+                    double newArea = regArea[bestA] + regArea[bestB];
+                    if (newArea > 1e-12)
+                    {
+                        regCurv[bestA] = (regArea[bestA] * regCurv[bestA] + regArea[bestB] * regCurv[bestB]) / newArea;
+                        Vector3d mNorm = regArea[bestA] * regNorm[bestA] + regArea[bestB] * regNorm[bestB];
+                        if (mNorm.Length > 1e-12) mNorm.Unitize();
+                        regNorm[bestA] = mNorm;
+                    }
+                    regArea[bestA] = newArea;
+                    parentReg[bestB] = bestA;
+                    activeRegionCount--;
+                }
+
+                // Re-index merged regions to 0..K_final-1
+                var rootToNew = new Dictionary<int, int>();
+                for (int f = 0; f < nF; f++)
+                {
+                    int root = FindRoot(regionId[f]);
+                    if (!rootToNew.TryGetValue(root, out int newIdx))
+                    {
+                        newIdx = rootToNew.Count;
+                        rootToNew[root] = newIdx;
+                    }
+                    regionId[f] = newIdx;
+                }
+                activeRegionCount = rootToNew.Count;
+            }
+
+            EnforceConnectedClusterRegions(mesh, regionId, activeRegionCount);
+
+            // 5. Boundary Rectification Process (LIRIS-1815 Section 5, Eq. 5-8):
+            //    Vertices on sharp creases stay locked to the exact sharp crease; non-crease seam vertices
+            //    are rectified along the minimum principal curvature direction d_min and geodesic tension!
+            Point3d[] rectifiedPos = ProjectSeamVerticesToGeodesicCostura(mesh, regionId, 18);
+            for (int v = 0; v < nV; v++)
+            {
+                if (isSharpVertex[v])
+                    rectifiedPos[v] = mesh.Positions[v]; // Preserve crisp CAD/Mold sharp creases!
+            }
+
+            Color[] palette = GenerateDistinctPalette(activeRegionCount);
+            List<Mesh> subMeshes = BuildSubMeshesFromFaceLabels(mesh, regionId, activeRegionCount, palette, out coloredSegmentedMesh, rectifiedPos);
+            rectifiedBoundaries = ExtractLabelBoundaryCurves(mesh, regionId, rectifiedPos);
+
+            return subMeshes;
         }
     }
 }
