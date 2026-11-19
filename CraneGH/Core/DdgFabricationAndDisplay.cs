@@ -2657,8 +2657,9 @@ namespace CraneGH.Core
                                     int[] corners = { mf.A, mf.B, mf.C };
                                     for (int k = 0; k < 3; k++)
                                     {
+                                        if (mp.T[k] < 0.03) continue;
                                         int vi = corners[k];
-                                        double baryW = Math.Max(0.02, mp.T[k]);
+                                        double baryW = mp.T[k];
                                         // Surface-projected distance from triangle corner vi to projected curve point mp.Point!
                                         double dSurf = mesh.Positions[vi].DistanceTo(mp.Point);
                                         AddBarycentricSeed(vi, dSurf, baryW * (1.0 + sampleCount * segWeight));
@@ -7663,14 +7664,55 @@ namespace CraneGH.Core
                 }
             }
 
-            // If the mesh had fewer initial regions than targetK (e.g. a single smooth region or fewer sharp loops than K),
-            // split the largest regions using Crease-Aware K-Means so we have at least targetK * 2 regions before RAG merging!
-            if (numInitialRegions < targetK)
+            // Check if any single initial region dominates the mesh area or if we need finer superfacets before RAG merging
+            double checkTotalArea = 0.0, checkMaxRegArea = 0.0;
+            double[] initAreas = new double[Math.Max(1, numInitialRegions)];
+            for (int f = 0; f < nF; f++)
+            {
+                double a = mesh.FaceAreas[f];
+                checkTotalArea += a;
+                initAreas[regionId[f]] += a;
+                if (initAreas[regionId[f]] > checkMaxRegArea)
+                    checkMaxRegArea = initAreas[regionId[f]];
+            }
+
+            int desiredSuperK = Math.Max(10, targetK * 2);
+            if (numInitialRegions < desiredSuperK || checkMaxRegArea > 1.45 * (checkTotalArea / Math.Max(2, targetK)))
             {
                 ComputeKMeansNormalVectorSegmentation(
-                    mesh, targetK, 4.0, 1.5, 0.0, 6.0, null, null,
-                    out _, out _, out _, out regionId, out _);
-                numInitialRegions = targetK;
+                    mesh, desiredSuperK, 3.5, 1.5, 0.8, 7.0, dMax, kMax,
+                    out _, out _, out _, out int[] superLabels, out _);
+
+                // Intersect sharp-crease regionId with curvature-tensor superLabels and re-index connected components
+                int[] combinedId = new int[nF];
+                for (int f = 0; f < nF; f++) combinedId[f] = -1;
+                int newCount = 0;
+                for (int f = 0; f < nF; f++)
+                {
+                    if (combinedId[f] != -1) continue;
+                    int cid = newCount++;
+                    int rOrig = regionId[f];
+                    int rSup = superLabels[f];
+                    combinedId[f] = cid;
+                    queue.Enqueue(f);
+                    while (queue.Count > 0)
+                    {
+                        int cur = queue.Dequeue();
+                        for (int k = 0; k < 3; k++)
+                        {
+                            var he = mesh.HalfEdges[cur * 3 + k];
+                            if (he.Twin == -1 || isSharpEdge[he.EdgeIndex]) continue;
+                            int nb = mesh.HalfEdges[he.Twin].FaceIndex;
+                            if (combinedId[nb] == -1 && regionId[nb] == rOrig && superLabels[nb] == rSup)
+                            {
+                                combinedId[nb] = cid;
+                                queue.Enqueue(nb);
+                            }
+                        }
+                    }
+                }
+                regionId = combinedId;
+                numInitialRegions = newCount;
             }
 
             // 4. Region Adjacency Graph (RAG) Merging Process (LIRIS-1815 Section 4.4, Eq. 1-4):
@@ -8198,6 +8240,60 @@ namespace CraneGH.Core
 
             coloredDraftMesh = ColorMeshByPalette(mesh.RhinoMesh, draftAnglesDeg, 1, -45.0, 45.0);
             return draftAnglesDeg;
+        }
+
+        public static void ComputeSeparateCurvatureFields(
+            DdgMesh mesh,
+            double smoothness,
+            out double[] gaussianK,
+            out double[] meanH,
+            out double[] maxPrincipalK1,
+            out double[] minPrincipalK2,
+            out double[] curvedness,
+            out double[] shapeIndex,
+            out Vector3d[] maxDirD1,
+            out Vector3d[] minDirD2)
+        {
+            int nV = mesh.VertexCount;
+            gaussianK = new double[nV];
+            meanH = new double[nV];
+
+            for (int v = 0; v < nV; v++)
+            {
+                // Pointwise area-normalized Gaussian curvature density K_v / A_v ( vanishes on boundary vertices to avoid boundary defect spikes )
+                gaussianK[v] = mesh.VertexOnBoundary[v] ? 0.0 : (mesh.GaussianCurvature[v] / Math.Max(1e-12, mesh.DualAreas[v]));
+                meanH[v] = mesh.VertexOnBoundary[v] ? 0.0 : mesh.MeanCurvature[v];
+            }
+
+            if (smoothness > 1e-4)
+            {
+                gaussianK = SmoothScalarField(mesh, gaussianK, smoothness, 2.0, out _, out _);
+                meanH = SmoothScalarField(mesh, meanH, smoothness, 2.0, out _, out _);
+            }
+
+            maxPrincipalK1 = new double[nV];
+            minPrincipalK2 = new double[nV];
+            curvedness = new double[nV];
+            shapeIndex = new double[nV];
+
+            for (int v = 0; v < nV; v++)
+            {
+                double H = meanH[v];
+                double K = gaussianK[v];
+                double disc = Math.Max(0.0, H * H - K);
+                double root = Math.Sqrt(disc);
+                double k1 = H + root;
+                double k2 = H - root;
+                maxPrincipalK1[v] = k1;
+                minPrincipalK2[v] = k2;
+                curvedness[v] = Math.Sqrt(0.5 * (k1 * k1 + k2 * k2));
+                double denom = k1 - k2;
+                shapeIndex[v] = Math.Abs(denom) > 1e-12
+                    ? (2.0 / Math.PI) * Math.Atan((k1 + k2) / denom)
+                    : 0.0;
+            }
+
+            maxDirD1 = ComputeOptimalDirectionField(mesh, 4, 0.85, out minDirD2, out _);
         }
     }
 }

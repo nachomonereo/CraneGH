@@ -847,4 +847,265 @@ namespace CraneGH.Components
 
         public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000072");
     }
+
+    public class GH_GaussianCurvatureVisualizer : GH_Component
+    {
+        private Mesh _coloredMesh;
+        private Point3d _minPt;
+        private Point3d _maxPt;
+        private double _minVal;
+        private double _maxVal;
+
+        public GH_GaussianCurvatureVisualizer()
+          : base("Gaussian Curvature Visualizer", "GaussView",
+              "Dedicated visualizer for Discrete Gaussian Curvature K = K1 * K2 (Blue = Hyperbolic Saddle K < 0, White = Developable K = 0, Red = Elliptic Dome/Bowl K > 0).",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("GaussView");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Smoothness", "S", "Cotan-Laplace smoothing strength for Gaussian curvature density", GH_ParamAccess.item, 1.5);
+            pManager.AddIntegerParameter("Palette", "P", "Colormap: 0 = Heat, 1 = CoolWarm Diverging (K=0 White), 2 = Viridis, 3 = Turbo", GH_ParamAccess.item, 1);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Gaussian Curvature", "K", "Area-normalized Gaussian curvature K per vertex", GH_ParamAccess.list);
+            pManager.AddIntervalParameter("Curvature Domain", "D", "Domain [Min K, Max K]", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Gaussian Curvature K", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh m = null;
+            double smoothness = 1.5;
+            int palette = 1;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref smoothness);
+            DA.GetData(2, ref palette);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            DdgAlgorithms.ComputeSeparateCurvatureFields(
+                ddg, smoothness,
+                out double[] K, out _, out _, out _, out _, out _, out _, out _);
+
+            _minVal = double.MaxValue;
+            _maxVal = double.MinValue;
+            int minIdx = 0, maxIdx = 0;
+            for (int i = 0; i < ddg.VertexCount; i++)
+            {
+                if (K[i] < _minVal) { _minVal = K[i]; minIdx = i; }
+                if (K[i] > _maxVal) { _maxVal = K[i]; maxIdx = i; }
+            }
+            _minPt = ddg.Positions[minIdx];
+            _maxPt = ddg.Positions[maxIdx];
+
+            double maxAbs = Math.Max(1e-9, Math.Max(Math.Abs(_minVal), Math.Abs(_maxVal)));
+            _coloredMesh = (palette == 1)
+                ? DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, K, 1, -maxAbs, maxAbs)
+                : DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, K, palette);
+
+            DA.SetDataList(0, K);
+            DA.SetData(1, new Interval(_minVal, _maxVal));
+            DA.SetData(2, _coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _coloredMesh == null) return;
+
+            args.Display.DrawDot(_minPt, $"K Min: {_minVal:0.####}", Color.FromArgb(40, 90, 200), Color.White);
+            args.Display.DrawDot(_maxPt, $"K Max: {_maxVal:0.####}", Color.FromArgb(215, 50, 40), Color.White);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000073");
+    }
+
+    public class GH_MeanCurvatureVisualizer : GH_Component
+    {
+        private Mesh _coloredMesh;
+        private Point3d _minPt;
+        private Point3d _maxPt;
+        private double _minVal;
+        private double _maxVal;
+
+        public GH_MeanCurvatureVisualizer()
+          : base("Mean Curvature Visualizer", "MeanView",
+              "Dedicated visualizer for Discrete Mean Curvature H = (K1 + K2)/2 (Blue = Concave Valley H < 0, White = Minimal/Flat H = 0, Red = Convex Ridge H > 0).",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("MeanView");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddNumberParameter("Smoothness", "S", "Cotan-Laplace smoothing strength for Mean curvature H", GH_ParamAccess.item, 1.5);
+            pManager.AddIntegerParameter("Palette", "P", "Colormap: 0 = Heat, 1 = CoolWarm Diverging (H=0 White), 2 = Viridis, 3 = Turbo", GH_ParamAccess.item, 1);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Mean Curvature", "H", "Discrete Mean Curvature H per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Mean Curvature Normals", "HN", "Mean curvature normal vector H * N per vertex", GH_ParamAccess.list);
+            pManager.AddIntervalParameter("Curvature Domain", "D", "Domain [Min H, Max H]", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by Mean Curvature H", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            Mesh m = null;
+            double smoothness = 1.5;
+            int palette = 1;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref smoothness);
+            DA.GetData(2, ref palette);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            DdgAlgorithms.ComputeSeparateCurvatureFields(
+                ddg, smoothness,
+                out _, out double[] H, out _, out _, out _, out _, out _, out _);
+
+            _minVal = double.MaxValue;
+            _maxVal = double.MinValue;
+            int minIdx = 0, maxIdx = 0;
+            var hnVecs = new Vector3d[ddg.VertexCount];
+            for (int i = 0; i < ddg.VertexCount; i++)
+            {
+                if (H[i] < _minVal) { _minVal = H[i]; minIdx = i; }
+                if (H[i] > _maxVal) { _maxVal = H[i]; maxIdx = i; }
+                hnVecs[i] = H[i] * ddg.VertexNormals[i];
+            }
+            _minPt = ddg.Positions[minIdx];
+            _maxPt = ddg.Positions[maxIdx];
+
+            double maxAbs = Math.Max(1e-9, Math.Max(Math.Abs(_minVal), Math.Abs(_maxVal)));
+            _coloredMesh = (palette == 1)
+                ? DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, H, 1, -maxAbs, maxAbs)
+                : DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, H, palette);
+
+            DA.SetDataList(0, H);
+            DA.SetDataList(1, hnVecs);
+            DA.SetData(2, new Interval(_minVal, _maxVal));
+            DA.SetData(3, _coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _coloredMesh == null) return;
+
+            args.Display.DrawDot(_minPt, $"H Min: {_minVal:0.####}", Color.FromArgb(40, 90, 200), Color.White);
+            args.Display.DrawDot(_maxPt, $"H Max: {_maxVal:0.####}", Color.FromArgb(215, 50, 40), Color.White);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000074");
+    }
+
+    public class GH_PrincipalCurvatureVisualizer : GH_Component
+    {
+        private readonly List<Line> _d1Lines = new List<Line>();
+        private readonly List<Line> _d2Lines = new List<Line>();
+
+        public GH_PrincipalCurvatureVisualizer()
+          : base("Principal Curvatures (K1 & K2) Visualizer", "PrinCurvView",
+              "Dedicated visualizer for Maximum (K1) and Minimum (K2) Principal Curvatures, Curvedness, Shape Index, and Principal Curvature Directions (D1, D2).",
+              "CraneGH", "01. Visualizers")
+        {
+        }
+
+        protected override Bitmap Icon => CraneIcons.GetIcon("PrinCurvView");
+
+        protected override void RegisterInputParams(GH_InputParamManager pManager)
+        {
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            pManager.AddIntegerParameter("Metric Mode", "Mode", "0 = Max Principal Curvature K1, 1 = Min Principal Curvature K2, 2 = Curvedness sqrt((K1^2+K2^2)/2), 3 = Shape Index [-1..+1]", GH_ParamAccess.item, 0);
+            pManager.AddNumberParameter("Direction Scale", "L", "Visual scale of Principal Direction segments D1 (Cyan) and D2 (Coral) (set 0 to hide ticks)", GH_ParamAccess.item, 0.55);
+        }
+
+        protected override void RegisterOutputParams(GH_OutputParamManager pManager)
+        {
+            pManager.AddNumberParameter("Max Curvature", "K1", "Maximum principal curvature K1 per vertex", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Min Curvature", "K2", "Minimum principal curvature K2 per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Max Direction", "D1", "Combed maximum principal curvature tangent vector D1 per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("Min Direction", "D2", "Combed minimum principal curvature tangent vector D2 per vertex", GH_ParamAccess.list);
+            pManager.AddMeshParameter("Colored Mesh", "CM", "Mesh colored by the selected Principal Curvature metric", GH_ParamAccess.item);
+        }
+
+        protected override void SolveInstance(IGH_DataAccess DA)
+        {
+            if (DA.Iteration == 0)
+            {
+                _d1Lines.Clear();
+                _d2Lines.Clear();
+            }
+
+            Mesh m = null;
+            int mode = 0;
+            double scale = 0.55;
+            DA.GetData(0, ref m);
+            DA.GetData(1, ref mode);
+            DA.GetData(2, ref scale);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
+
+            var ddg = new DdgMesh(m);
+            DdgAlgorithms.ComputeSeparateCurvatureFields(
+                ddg, 1.5,
+                out _, out _,
+                out double[] k1,
+                out double[] k2,
+                out double[] curvedness,
+                out double[] shapeIndex,
+                out Vector3d[] d1,
+                out Vector3d[] d2);
+
+            double[] activeMetric = mode == 1 ? k2 : (mode == 2 ? curvedness : (mode == 3 ? shapeIndex : k1));
+            Mesh coloredMesh = DdgAlgorithms.ColorMeshByPalette(ddg.RhinoMesh, activeMetric, mode == 2 ? 0 : 1);
+
+            if (scale > 1e-3)
+            {
+                double arm = 0.45 * scale * ddg.MeanEdgeLength;
+                int stride = Math.Max(1, ddg.VertexCount / 900);
+                for (int i = 0; i < ddg.VertexCount; i += stride)
+                {
+                    Point3d p = ddg.Positions[i];
+                    _d1Lines.Add(new Line(p - arm * d1[i], p + arm * d1[i]));
+                    _d2Lines.Add(new Line(p - arm * d2[i], p + arm * d2[i]));
+                }
+            }
+
+            DA.SetDataList(0, k1);
+            DA.SetDataList(1, k2);
+            DA.SetDataList(2, d1);
+            DA.SetDataList(3, d2);
+            DA.SetData(4, coloredMesh);
+        }
+
+        public override void DrawViewportWires(IGH_PreviewArgs args)
+        {
+            base.DrawViewportWires(args);
+            if (Hidden || Locked || _d1Lines.Count == 0) return;
+
+            Color c1 = Attributes.Selected ? Color.FromArgb(255, 240, 70) : Color.FromArgb(0, 225, 255);
+            Color c2 = Attributes.Selected ? Color.FromArgb(255, 160, 60) : Color.FromArgb(255, 95, 80);
+            args.Display.DrawLines(_d1Lines, c1, 2);
+            args.Display.DrawLines(_d2Lines, c2, 1);
+        }
+
+        public override Guid ComponentGuid => new Guid("A101B201-C301-4D01-9E01-000000000075");
+    }
 }

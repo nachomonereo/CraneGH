@@ -47,6 +47,9 @@ namespace CraneGH.Core
                     case "MeshAnalyze": DrawMeshAnalyze(g); break;
                     case "CreaseAnalyze": DrawCreaseAnalyze(g); break;
                     case "DraftAnalyze": DrawDraftAnalyze(g); break;
+                    case "GaussView": DrawGaussView(g); break;
+                    case "MeanView": DrawMeanView(g); break;
+                    case "PrinCurvView": DrawPrinCurvView(g); break;
 
                     // 02. Scalar & Geodesics
                     case "Curvatures": DrawCurvatures(g); break;
@@ -913,6 +916,38 @@ namespace CraneGH.Core
                 DrawArrow(g, pullPen, 12, 17, 12, 4);
             using (var border = new Pen(Color.FromArgb(25, 25, 30), 1.2f))
                 g.DrawEllipse(border, 1.5f, 1.5f, 21f, 21f);
+        }
+
+        // GaussView: Blue Hyperbolic Saddle (K<0) vs Red Dome (K>0)
+        private static void DrawGaussView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(35, 95, 215), Color.FromArgb(225, 55, 50));
+            using (var saddlePen = new Pen(Color.White, 2.0f))
+            {
+                g.DrawBezier(saddlePen, new PointF(4.5f, 8f), new PointF(10f, 14f), new PointF(14f, 14f), new PointF(19.5f, 8f));
+                g.DrawBezier(saddlePen, new PointF(7f, 17.5f), new PointF(10.5f, 11.5f), new PointF(13.5f, 11.5f), new PointF(17f, 17.5f));
+            }
+        }
+
+        // MeanView: Concave/Convex Mean Curvature Wave + Normal Vector H*N
+        private static void DrawMeanView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(240, 244, 250), Color.FromArgb(45, 115, 220));
+            using (var wavePen = new Pen(Color.FromArgb(220, 45, 45), 2.3f))
+                g.DrawBezier(wavePen, new PointF(4f, 14f), new PointF(9f, 4f), new PointF(15f, 20f), new PointF(20f, 10f));
+            using (var nPen = new Pen(Color.Gold, 1.8f))
+                DrawArrow(g, nPen, 9f, 10.5f, 9f, 4.5f);
+        }
+
+        // PrinCurvView: K1 & K2 Orthogonal Principal Curvature Arcs (Cyan D1 & Coral D2)
+        private static void DrawPrinCurvView(Graphics g)
+        {
+            DrawDiscBackground(g, Color.FromArgb(22, 32, 48), Color.FromArgb(14, 20, 32));
+            using (var p1 = new Pen(Color.FromArgb(0, 225, 255), 2.2f))
+                g.DrawArc(p1, 4f, 6f, 16f, 12f, 195, 150);
+            using (var p2 = new Pen(Color.FromArgb(255, 95, 80), 2.2f))
+                g.DrawArc(p2, 6f, 4f, 12f, 16f, 285, 150);
+            g.FillEllipse(Brushes.Gold, 10.2f, 10.2f, 3.6f, 3.6f);
         }
 
         private static void DrawArrow(Graphics g, Pen pen, float x1, float y1, float x2, float y2)

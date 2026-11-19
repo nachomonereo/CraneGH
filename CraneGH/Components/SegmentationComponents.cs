@@ -692,7 +692,7 @@ namespace CraneGH.Components
 
         public GH_CurvatureTensorRectifiedSegmenter()
           : base("CAD Crease & Curvature Tensor Segmenter", "TensorRectSeg",
-              "Automatically decomposes a mesh into constant-curvature and crease-bounded mold/CAD patches via Principal Curvature Tensor (Kmin, Kmax) Region Merging and Boundary Rectification (Lavoué, Dupont, Baskurt LIRIS-1815).",
+              "Decomposes a mesh into K constant-curvature and crease-bounded mold/CAD patches via Principal Curvature Tensor (Kmin, Kmax) Region Merging and Boundary Rectification (Lavoué, Dupont, Baskurt LIRIS-1815).",
               "CraneGH", "04. Segmentation & Fabrication")
         {
         }
@@ -703,7 +703,8 @@ namespace CraneGH.Components
         {
             int idxM = pManager.AddMeshParameter("Mesh", "M", "Input 3D mesh (if empty, uses Area-Normalized CAD Crease Test Mesh)", GH_ParamAccess.item);
             pManager[idxM].Optional = true;
-            pManager.AddNumberParameter("Crease Angle (Deg)", "A", "Dihedral crease threshold angle in degrees for hard mold/CAD boundaries (the geometry automatically determines the patches)", GH_ParamAccess.item, 25.0);
+            pManager.AddIntegerParameter("Segments", "K", "Target number of segmented patches K (set 0 to let the geometry automatically decide the number of patches)", GH_ParamAccess.item, 6);
+            pManager.AddNumberParameter("Crease Angle (Deg)", "A", "Dihedral crease threshold angle in degrees for hard mold/CAD boundaries", GH_ParamAccess.item, 25.0);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
@@ -723,16 +724,18 @@ namespace CraneGH.Components
             }
 
             Mesh m = null;
+            int kCount = 6;
             double creaseDeg = 25.0;
 
             DA.GetData(0, ref m);
-            DA.GetData(1, ref creaseDeg);
+            DA.GetData(1, ref kCount);
+            DA.GetData(2, ref creaseDeg);
             if (m == null || m.Vertices.Count < 3)
                 m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 2, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
             List<Mesh> subMeshes = DdgAlgorithms.ComputeCurvatureTensorRectifiedSegmentation(
-                ddg, 0, creaseDeg,
+                ddg, kCount, creaseDeg,
                 out List<Polyline> rectSeams,
                 out List<Polyline> sharpCreases,
                 out Mesh coloredMesh);

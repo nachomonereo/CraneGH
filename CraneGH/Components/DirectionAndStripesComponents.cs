@@ -19,7 +19,7 @@ namespace CraneGH.Components
         {
         }
 
-        public override GH_Exposure Exposure => GH_Exposure.primary;
+        public override GH_Exposure Exposure => GH_Exposure.hidden;
 
         protected override Bitmap Icon => CraneIcons.GetIcon("OptField");
 
@@ -412,7 +412,7 @@ namespace CraneGH.Components
 
         public GH_PrincipalCrossField()
           : base("Cross Field (U & V)", "CrossField",
-              "Builds orthogonal U and V tangent vector fields and lightweight X-Cross segments from an Input Vector Field V (or from Principal Curvatures if V is empty).",
+              "Computes a globally combed, orthogonal 4-RoSy Cross Field (U and V) aligned with mesh boundaries, sharp creases, principal curvatures, or optional input Vectors/Curves.",
               "CraneGH", "03. Vector Fields & Stripes")
         {
         }
@@ -423,17 +423,17 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxV = pManager.AddVectorParameter("Input Field", "V", "Input tangent vector field (e.g. from SmoothField or WalkOnMesh) to decompose into U and V cross directions (leave empty for Principal Curvature Cross Field)", GH_ParamAccess.list);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            int idxV = pManager.AddGenericParameter("Guide Vectors or Curves", "G", "Optional input tangent Vector Field (Vector3d) or Guide Curves (Curve) to align the Cross Field with (leave empty for Principal Curvature & Boundary Cross Field)", GH_ParamAccess.list);
             pManager[idxV].Optional = true;
-            pManager.AddNumberParameter("Align / Fidelity", "A", "If V is provided: 1.0 = exact U & V from input field V, <1.0 = 4-RoSy cross relaxation. If V is empty: alignment to principal curvatures (0..1)", GH_ParamAccess.item, 1.0);
-            pManager.AddNumberParameter("Cross Scale", "S", "Visual scale factor for the output 3D X-cross line segments (relative to edge length)", GH_ParamAccess.item, 0.65);
+            pManager.AddNumberParameter("Smoothness", "S", "Cross-field smoothing strength (higher = smoother global 4-RoSy alignment)", GH_ParamAccess.item, 1.5);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddVectorParameter("U Field", "U", "Primary tangent direction vector U per vertex", GH_ParamAccess.list);
-            pManager.AddVectorParameter("V Field", "V", "Orthogonal second cross tangent direction vector V (N x U) per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("U Field", "U", "Combed primary tangent direction vector U per vertex", GH_ParamAccess.list);
+            pManager.AddVectorParameter("V Field", "V", "Combed orthogonal second cross tangent direction vector V (N x U) per vertex", GH_ParamAccess.list);
             pManager.AddLineParameter("X-Cross Lines", "Crx", "Lightweight 4-way X-cross line segments at every vertex on the mesh", GH_ParamAccess.list);
             pManager.AddPointParameter("Singularities", "P", "Detected cross-field singularity points (3-way or 5-way quad vertices)", GH_ParamAccess.list);
         }
@@ -449,27 +449,79 @@ namespace CraneGH.Components
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            if (DA.Iteration == 0)
+            {
+                _uLines.Clear();
+                _vLines.Clear();
+                _singularities.Clear();
+            }
+
             Mesh m = null;
-            var inField = new List<Vector3d>();
-            double align = 1.0;
-            double scale = 0.65;
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetDataList(1, inField);
-            DA.GetData(2, ref align);
-            DA.GetData(3, ref scale);
+            var rawGuides = new List<object>();
+            double smoothness = 1.5;
+            DA.GetData(0, ref m);
+            DA.GetDataList(1, rawGuides);
+            DA.GetData(2, ref smoothness);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
-            double effAlign = (inField.Count == 0 && Params.Input[2].SourceCount == 0) ? 0.5 : align;
+            var inVecs = new List<Vector3d>();
+            var inCurves = new List<Curve>();
+            foreach (object obj in rawGuides)
+            {
+                if (obj == null) continue;
+                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
+                if (val is Vector3d v) inVecs.Add(v);
+                else if (val is Curve c && c.IsValid) inCurves.Add(c);
+                else if (val is Line ln) inCurves.Add(new LineCurve(ln));
+                else if (val is Polyline pl && pl.Count >= 2) inCurves.Add(pl.ToPolylineCurve());
+            }
+
+            IList<Vector3d> refField = null;
+            if (inVecs.Count > 0)
+            {
+                refField = inVecs;
+            }
+            else if (inCurves.Count > 0)
+            {
+                var srcVerts = new List<int>();
+                var srcVecs = new List<Vector3d>();
+                foreach (Curve c in inCurves)
+                {
+                    int sampleCount = Math.Max(16, Math.Min(250, (int)(c.GetLength() / Math.Max(1e-5, 0.5 * ddg.MeanEdgeLength))));
+                    c.DivideByCount(sampleCount, true, out Point3d[] pts);
+                    if (pts == null) continue;
+                    foreach (Point3d p in pts)
+                    {
+                        int vIdx = ddg.FindClosestVertex(p);
+                        if (c.ClosestPoint(p, out double tParam))
+                        {
+                            Vector3d tan = c.TangentAt(tParam);
+                            tan -= (tan * ddg.VertexNormals[vIdx]) * ddg.VertexNormals[vIdx];
+                            if (tan.Unitize())
+                            {
+                                srcVerts.Add(vIdx);
+                                srcVecs.Add(tan);
+                            }
+                        }
+                    }
+                }
+                if (srcVerts.Count > 0)
+                    refField = DdgAlgorithms.ComputeVectorHeatTransport(ddg, srcVerts, srcVecs, 2.0);
+            }
+
+            double align = 1.0 / Math.Max(0.1, smoothness);
             Vector3d[] uDir = DdgAlgorithms.ComputeOptimalDirectionField(
                 ddg,
                 4,
-                effAlign,
+                align,
                 out Vector3d[] vDir,
                 out List<Point3d> sings,
-                inField.Count > 0 ? inField : null);
+                refField);
             _singularities.AddRange(sings);
 
-            double arm = 0.5 * Math.Max(0.05, scale) * ddg.MeanEdgeLength;
+            double arm = 0.35 * ddg.MeanEdgeLength;
             var crossLines = new List<Line>(ddg.VertexCount * 2);
             int stride = Math.Max(1, ddg.VertexCount / 1200);
             for (int i = 0; i < ddg.VertexCount; i++)
@@ -516,7 +568,7 @@ namespace CraneGH.Components
 
         public GH_CrossFieldQuadGrid()
           : base("Cross Field Quad Stripes", "CrossQuads",
-              "Generates and displays two orthogonal sets of equidistant Quad Stripe curves (U and V) separated by Distance D aligned to a Cross Field (with Touch Ends control, default = False).",
+              "Generates and displays two orthogonal sets of equidistant Quad Stripe curves (U and V) separated by Distance D aligned to a combed Cross Field (with Touch Ends control, default = False).",
               "CraneGH", "03. Vector Fields & Stripes")
         {
         }
@@ -527,9 +579,10 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
             pManager.AddVectorParameter("Cross U Field", "U", "First cross direction vector per vertex (from CrossField, or leave empty for automatic Principal Cross Field)", GH_ParamAccess.list);
-            pManager.AddNumberParameter("Quad Distance", "D", "Target physical spacing distance (in Rhino units) between orthogonal U and V quad stripe curves", GH_ParamAccess.item, 0.0);
+            pManager.AddNumberParameter("Quad Distance", "D", "Target physical spacing distance (in Rhino units) between orthogonal U and V quad stripe curves (0 = automatic)", GH_ParamAccess.item, 0.0);
             pManager.AddBooleanParameter("Touch Ends", "T", "False (default) = stripe ends stay separated at bifurcations/loops; True = stripe ends touch", GH_ParamAccess.item, false);
             pManager[1].Optional = true;
         }
@@ -552,30 +605,31 @@ namespace CraneGH.Components
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            if (DA.Iteration == 0)
+            {
+                _uCurves.Clear();
+                _vCurves.Clear();
+                _sings.Clear();
+            }
+
             Mesh m = null;
             var uInput = new List<Vector3d>();
             double dist = 0.0;
             bool touchEnds = false;
-            if (!DA.GetData(0, ref m) || m == null) return;
+            DA.GetData(0, ref m);
             DA.GetDataList(1, uInput);
             DA.GetData(2, ref dist);
             DA.GetData(3, ref touchEnds);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
-            Vector3d[] uDir;
-            Vector3d[] vDir;
-
-            if (uInput.Count > 0)
-            {
-                uDir = ddg.MapVectorInputToVertices(uInput);
-                vDir = new Vector3d[ddg.VertexCount];
-                for (int i = 0; i < ddg.VertexCount; i++)
-                    vDir[i] = Vector3d.CrossProduct(ddg.VertexNormals[i], uDir[i]);
-            }
-            else
-            {
-                uDir = DdgAlgorithms.ComputeOptimalDirectionField(ddg, 4, 0.5, out vDir, out _);
-            }
+            // Always comb (uDir, vDir) via ComputeOptimalDirectionField so U and V never have 90-degree swaps!
+            Vector3d[] uDir = DdgAlgorithms.ComputeOptimalDirectionField(
+                ddg, 4, uInput.Count > 0 ? 1.5 : 0.65,
+                out Vector3d[] vDir,
+                out _,
+                uInput.Count > 0 ? uInput : null);
 
             DdgAlgorithms.ComputeStripePatternsByDistance(ddg, uDir, null, dist, 2, out List<Polyline> uCrvs, out List<Point3d> bU, null, touchEnds);
             DdgAlgorithms.ComputeStripePatternsByDistance(ddg, vDir, null, dist, 2, out List<Polyline> vCrvs, out List<Point3d> bV, null, touchEnds);
@@ -702,13 +756,11 @@ namespace CraneGH.Components
     {
         private readonly List<Line> _primaryLines = new List<Line>();
         private readonly List<Line> _secondaryLines = new List<Line>();
-        private readonly List<Color> _glyphColors = new List<Color>();
         private Mesh _coloredMesh;
-        private int _displayMode = 0;
 
         public GH_MeshFieldDisplay()
           : base("Vector Field Visualizer", "VecView",
-              "Visualizes any Vector Field (0), X-Cross Field (1), Scalar Gradient (2), or Vector Gradient/Div/Curl (3) on a mesh using fast batched GPU line segments.",
+              "Visualizes any 1-Direction Vector Field V on a mesh using fast batched GPU directional segments, coloring the mesh by Vector Magnitude ||V|| and computing Divergence and Curl.",
               "CraneGH", "01. Visualizers")
         {
         }
@@ -717,21 +769,20 @@ namespace CraneGH.Components
 
         protected override void RegisterInputParams(GH_InputParamManager pManager)
         {
-            pManager.AddMeshParameter("Mesh", "M", "Input surface mesh", GH_ParamAccess.item);
-            int idxF = pManager.AddGenericParameter("Vectors or Scalars", "F", "Tangent Vectors (Vector3d) or Scalar Field (double) to compute Geodesic Gradient (leave empty for Principal Curvature X-Cross Field)", GH_ParamAccess.list);
+            int idxM = pManager.AddMeshParameter("Mesh", "M", "Input surface mesh (if empty, uses Area-Normalized Test Mesh)", GH_ParamAccess.item);
+            pManager[idxM].Optional = true;
+            int idxF = pManager.AddVectorParameter("Vector Field", "V", "Tangent Vectors (Vector3d) per vertex or face (leave empty for Principal Direction Field)", GH_ParamAccess.list);
             pManager[idxF].Optional = true;
-            pManager.AddNumberParameter("Scale", "S", "Visual segment length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
-            pManager.AddIntegerParameter("Mode", "Mode", "0 = Vector Segments + Cross Ticks, 1 = 4-RoSy Symmetric X-Crosses, 2 = Geodesic Gradient Segments + Wavefront Ticks, 3 = Covariant Vector Gradient + Divergence/Curl", GH_ParamAccess.item, 1);
+            pManager.AddNumberParameter("Segment Scale", "S", "Visual segment length multiplier relative to average mesh edge length", GH_ParamAccess.item, 0.75);
         }
 
         protected override void RegisterOutputParams(GH_OutputParamManager pManager)
         {
-            pManager.AddLineParameter("Primary Lines", "L", "Primary 3D vector segments or U-cross lines", GH_ParamAccess.list);
-            pManager.AddLineParameter("X-Cross / Ortho Lines", "Crx", "Orthogonal 4-RoSy V-cross lines or iso-wavefront ticks", GH_ParamAccess.list);
-            pManager.AddVectorParameter("Vector Gradient", "VG", "Covariant Vector Gradient (direction & rate of spatial change of the vector field)", GH_ParamAccess.list);
+            pManager.AddLineParameter("Vector Segments", "L", "3D directional vector segments per vertex", GH_ParamAccess.list);
+            pManager.AddNumberParameter("Vector Magnitude", "Mag", "Vector magnitude ||V|| per vertex", GH_ParamAccess.list);
             pManager.AddNumberParameter("Divergence", "Div", "Discrete Divergence (div V) per vertex", GH_ParamAccess.list);
             pManager.AddNumberParameter("Curl / Rotor", "Curl", "Discrete Curl ((nabla x V) . N) per vertex", GH_ParamAccess.list);
-            pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by Magnitude (0), Curl (1), Geodesic Slope (2), or Vector Gradient Norm (3)", GH_ParamAccess.item);
+            pManager.AddMeshParameter("Analysis Mesh", "CM", "Mesh colored by Vector Magnitude / Flow Intensity", GH_ParamAccess.item);
         }
 
         protected override void BeforeSolveInstance()
@@ -739,71 +790,56 @@ namespace CraneGH.Components
             base.BeforeSolveInstance();
             _primaryLines.Clear();
             _secondaryLines.Clear();
-            _glyphColors.Clear();
             _coloredMesh = null;
             CraneTreeHelper.NormalizeMeshAndFieldTrees(this, 0, new int[] { 1 });
         }
 
         protected override void SolveInstance(IGH_DataAccess DA)
         {
+            if (DA.Iteration == 0)
+            {
+                _primaryLines.Clear();
+                _secondaryLines.Clear();
+            }
+
             Mesh m = null;
-            var rawItems = new List<object>();
-            double scale = 0.75;
-            int mode = 1;
-
-            if (!DA.GetData(0, ref m) || m == null) return;
-            DA.GetDataList(1, rawItems);
-            DA.GetData(2, ref scale);
-            DA.GetData(3, ref mode);
-
-            // Map legacy style values (4 -> 1 for 4-RoSy Crosses)
-            if (mode == 4) mode = 1;
-            _displayMode = Math.Max(0, Math.Min(3, mode));
-
             var inVecs = new List<Vector3d>();
-            var inScalars = new List<double>();
+            double scale = 0.75;
 
-            foreach (object obj in rawItems)
-            {
-                if (obj == null) continue;
-                object val = (obj is IGH_Goo goo) ? goo.ScriptVariable() : obj;
-                if (val is Vector3d v) inVecs.Add(v);
-                else if (val is Point3d pt) inVecs.Add(new Vector3d(pt.X, pt.Y, pt.Z));
-                else if (val is double d) inScalars.Add(d);
-                else if (val is int iv) inScalars.Add(iv);
-            }
-
-            if (inScalars.Count > 0 && inVecs.Count == 0 && Params.Input[3].SourceCount == 0)
-            {
-                // Auto-switch to Geodesic Gradient + Wavefront Ticks if user connected a scalar field
-                _displayMode = 2;
-            }
+            DA.GetData(0, ref m);
+            DA.GetDataList(1, inVecs);
+            DA.GetData(2, ref scale);
+            if (m == null || m.Vertices.Count < 3)
+                m = DdgAlgorithms.CreateAreaNormalizedTestMesh(null, 0, 1000.0, out _, out _, out _);
 
             var ddg = new DdgMesh(m);
             DdgAlgorithms.ComputeVectorFieldGradientsAndGlyphs(
                 ddg,
                 inVecs.Count > 0 ? inVecs : null,
-                inScalars.Count > 0 ? inScalars : null,
+                null,
                 scale,
-                _displayMode,
+                0,
                 out List<Line> primLines,
                 out List<Line> orthoLines,
-                out Vector3d[] covGrad,
+                out _,
                 out double[] div,
                 out double[] curl,
                 out _coloredMesh,
-                out List<Color> cols);
+                out _);
 
             _primaryLines.AddRange(primLines);
             _secondaryLines.AddRange(orthoLines);
-            _glyphColors.AddRange(cols);
+
+            Vector3d[] mappedV = inVecs.Count > 0 ? ddg.MapVectorInputToVertices(inVecs) : ddg.PrincipalDir;
+            double[] mag = new double[ddg.VertexCount];
+            for (int i = 0; i < ddg.VertexCount; i++)
+                mag[i] = mappedV[i].Length;
 
             DA.SetDataList(0, primLines);
-            DA.SetDataList(1, orthoLines);
-            DA.SetDataList(2, covGrad);
-            DA.SetDataList(3, div);
-            DA.SetDataList(4, curl);
-            DA.SetData(5, _coloredMesh);
+            DA.SetDataList(1, mag);
+            DA.SetDataList(2, div);
+            DA.SetDataList(3, curl);
+            DA.SetData(4, _coloredMesh);
         }
 
         public override void DrawViewportWires(IGH_PreviewArgs args)
@@ -812,15 +848,9 @@ namespace CraneGH.Components
             if (Hidden || Locked || _primaryLines.Count == 0) return;
 
             Color cPrim = Attributes.Selected ? Color.FromArgb(255, 235, 60) : Color.FromArgb(0, 225, 255);
-            Color cOrtho = Attributes.Selected ? Color.FromArgb(255, 160, 70) : Color.FromArgb(245, 95, 80);
-
-            // Fast batched GPU line segment rendering (no heavy 3D cone arrows)
             args.Display.DrawLines(_primaryLines, cPrim, 2);
             if (_secondaryLines.Count > 0)
-            {
-                Color cSec = _displayMode == 1 ? cOrtho : Color.FromArgb(190, 255, 180, 90);
-                args.Display.DrawLines(_secondaryLines, cSec, _displayMode == 1 ? 2 : 1);
-            }
+                args.Display.DrawLines(_secondaryLines, Color.FromArgb(180, 255, 190, 90), 1);
         }
 
         public override Guid ComponentGuid => new Guid("A104B204-C304-4D04-9E04-000000000031");

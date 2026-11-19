@@ -20,15 +20,8 @@ namespace CraneGH.Core
             IList<double> optionalBarycentricSourceWeights = null)
         {
             int n = mesh.VertexCount;
-            double h = mesh.MeanEdgeLength;
-            // Slightly larger default diffusion time (2.0 * h^2) eliminates triangle-level discretization noise on arbitrary curves
-            double t = Math.Max(1e-5, timeFactor) * 2.0 * h * h;
+            double h = Math.Max(1e-6, mesh.MeanEdgeLength);
 
-            var heatBuilder = mesh.BuildCotanLaplacianBuilder(t);
-            for (int i = 0; i < n; i++)
-                heatBuilder.Add(i, i, mesh.DualAreas[i]);
-
-            double[] rhs = new double[n];
             var activeSources = new List<int>();
             bool[] isSource = new bool[n];
             double[] d0PerVertex = new double[n];
@@ -123,75 +116,123 @@ namespace CraneGH.Core
                 }
             }
 
-            // 1. Compute Exact Multi-Source Geodesic Fast-Marching / Planar-Triangle Eikonal Distance dEik
-            //    ONLY to calibrate physical Rhino distance scale per connected component (never mixed raw into phi!)
+            // 1. Compute Exact Multi-Source Planar-Triangle Fast-Marching Eikonal Geodesic Distance dEik
             double[] dEik = ComputeExactSurfaceGeodesicBaseline(mesh, activeSources, d0PerVertex);
+            double maxGeodesicSpan = 0.0;
+            for (int i = 0; i < n; i++)
+                if (dEik[i] > maxGeodesicSpan) maxGeodesicSpan = dEik[i];
 
-            // 2. Inject smooth barycentric Robin heat sources: (M + t*Lc + gamma*W_src) u = gamma*W_src
-            //    This avoids jagged staircase pinning on interior curves while keeping uniform temperature along the curve!
-            double robinStiff = 50.0;
+            // 2. Scale heat diffusion time with the global geodesic span so heat u(x) NEVER underflows to 0
+            //    even 100+ edges away from a curve at the bottom of a dense mesh!
+            double charLen = Math.Max(3.0 * h, 0.35 * maxGeodesicSpan);
+            double t = Math.Max(0.1, timeFactor) * charLen * charLen;
+
+            var heatBuilder = mesh.BuildCotanLaplacianBuilder(t);
+            for (int i = 0; i < n; i++)
+                heatBuilder.Add(i, i, mesh.DualAreas[i]);
+
+            double[] rhs = new double[n];
+            double robinStiff = 80.0;
             foreach (int sv in activeSources)
             {
-                double w = robinStiff * mesh.DualAreas[sv] * srcWeightPerVertex[sv];
+                double d0 = d0PerVertex[sv];
+                // Attenuate off-curve triangle corners smoothly by their sub-triangle distance d0
+                double subTriDecay = Math.Exp(-(d0 * d0) / Math.Max(1e-12, 1.5 * h * h));
+                double w = robinStiff * mesh.DualAreas[sv] * srcWeightPerVertex[sv] * Math.Max(0.05, subTriDecay);
                 heatBuilder.Add(sv, sv, w);
-                rhs[sv] = w;
+                rhs[sv] = w * Math.Exp(-(d0 * d0) / Math.Max(1e-12, 4.0 * t));
             }
 
             CsrMatrix heatMat = heatBuilder.Build();
-            double[] u = SparseLinearSolver.SolvePCG(heatMat, rhs, 1200, 1e-8);
+            double[] u = SparseLinearSolver.SolvePCG(heatMat, rhs, 1500, 1e-10);
 
-            // 3. Compute normalized face gradients X = -grad(u) / ||grad(u)|| and apply 1 pass of
-            //    intrinsic face-adjacency smoothing to eliminate any skinny-triangle gradient jitter!
+            // 3. Combine smooth Heat gradient (-grad u / ||grad u||) and exact Eikonal wavefront gradient (+grad dEik / ||grad dEik||),
+            //    both pointing strictly AWAY from the source toward increasing geodesic distance!
             mesh.ComputeGradient(u, out Vector3d[] gradU, out _);
+            mesh.ComputeGradient(dEik, out Vector3d[] gradEik, out _);
+
             var rawFaceX = new Vector3d[mesh.FaceCount];
             for (int f = 0; f < mesh.FaceCount; f++)
             {
-                Vector3d g = -gradU[f];
-                if (g.Length > 1e-14)
-                    g.Unitize();
-                rawFaceX[f] = g;
-            }
+                Vector3d gHeat = -gradU[f];
+                if (gHeat.Length > 1e-14) gHeat.Unitize();
 
-            normalizedFaceGradients = new Vector3d[mesh.FaceCount];
-            for (int f = 0; f < mesh.FaceCount; f++)
-            {
+                Vector3d gEik = gradEik[f];
+                if (gEik.Length > 1e-14) gEik.Unitize();
+
+                // Guarantee consistent orientation with increasing geodesic distance
+                if (gHeat.Length < 1e-12 || (gHeat * gEik) < 0.0)
+                    gHeat = gEik;
+
+                Vector3d gCombined = 0.50 * gEik + 0.50 * gHeat;
                 Vector3d nf = mesh.FaceNormals[f];
-                Vector3d sum = rawFaceX[f] * 2.0;
-                for (int k = 0; k < 3; k++)
-                {
-                    var he = mesh.HalfEdges[f * 3 + k];
-                    if (he.Twin != -1)
-                    {
-                        int nbF = mesh.HalfEdges[he.Twin].FaceIndex;
-                        Vector3d nbX = rawFaceX[nbF];
-                        nbX -= (nbX * nf) * nf;
-                        sum += nbX;
-                    }
-                }
-                sum -= (sum * nf) * nf;
-                if (sum.Length > 1e-12) sum.Unitize();
-                else sum = rawFaceX[f];
-                normalizedFaceGradients[f] = sum;
+                gCombined -= (gCombined * nf) * nf;
+                if (gCombined.Length > 1e-14) gCombined.Unitize();
+                else gCombined = gEik;
+                rawFaceX[f] = gCombined;
             }
 
-            // 4. Solve Poisson equation L_c * phi = div(X) with soft barycentric Robin zero-anchoring on source vertices
-            //    so phi is 100% C^1 smooth everywhere without sawtooth pinning artifacts!
+            // Two passes of intrinsic face-neighbor tangent smoothing to eliminate any triangle-facet noise
+            int smoothPasses = timeFactor >= 1.5 ? 3 : 2;
+            for (int pass = 0; pass < smoothPasses; pass++)
+            {
+                var nextFaceX = new Vector3d[mesh.FaceCount];
+                for (int f = 0; f < mesh.FaceCount; f++)
+                {
+                    Vector3d nf = mesh.FaceNormals[f];
+                    Vector3d sum = rawFaceX[f] * 2.0;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        var he = mesh.HalfEdges[f * 3 + k];
+                        if (he.Twin != -1)
+                        {
+                            int nbF = mesh.HalfEdges[he.Twin].FaceIndex;
+                            Vector3d nbX = rawFaceX[nbF];
+                            nbX -= (nbX * nf) * nf;
+                            sum += nbX;
+                        }
+                    }
+                    sum -= (sum * nf) * nf;
+                    if (sum.Length > 1e-12) sum.Unitize();
+                    else sum = rawFaceX[f];
+                    nextFaceX[f] = sum;
+                }
+                rawFaceX = nextFaceX;
+            }
+            normalizedFaceGradients = rawFaceX;
+
+            // 4. Solve Screened Poisson Geodesic Equation:
+            //    (alpha * M + L_c + W_src) * phi = alpha * M * dEik - div(X) + W_src * d0
+            //    NOTE: Because BuildCotanLaplacianBuilder builds positive-definite (L_c * phi)_i = sum w_ij (phi_i - phi_j)
+            //    while ComputeIntegratedDivergence(X)_i = sum w_ij (phi_j - phi_i) = -(L_c * phi)_i,
+            //    we MUST use -divX[i] so phi increases gradually from 0 at the source to maxDist at the farthest vertex!
+            //    The screened Eikonal coupling (alpha * M * dEik) eliminates Neumann flux compression in narrow necks!
             double[] divX = mesh.ComputeIntegratedDivergence(normalizedFaceGradients);
             var lapBuilder = mesh.BuildCotanLaplacianBuilder(1.0);
-            double poissonAnchor = 25.0 / Math.Max(1e-8, h * h);
+            double smoothRadiusSq = Math.Max(0.35, timeFactor) * 4.0 * h * h;
+            double alphaScreen = 1.0 / Math.Max(1e-8, smoothRadiusSq);
+
+            double[] poissonRhs = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                double massAlpha = alphaScreen * mesh.DualAreas[i];
+                lapBuilder.Add(i, i, massAlpha);
+                poissonRhs[i] = massAlpha * dEik[i] - divX[i];
+            }
+
+            double poissonAnchor = 60.0 / Math.Max(1e-8, h * h);
             foreach (int sv in activeSources)
             {
                 double wAnchor = poissonAnchor * mesh.DualAreas[sv] * srcWeightPerVertex[sv];
                 lapBuilder.Add(sv, sv, wAnchor);
-                divX[sv] += wAnchor * d0PerVertex[sv];
+                poissonRhs[sv] += wAnchor * d0PerVertex[sv];
             }
             lapBuilder.ShiftDiagonal(1e-9);
             CsrMatrix lapMat = lapBuilder.Build();
 
-            double[] phi = SparseLinearSolver.SolvePCG(lapMat, divX, 1500, 1e-8);
+            double[] phi = SparseLinearSolver.SolvePCG(lapMat, poissonRhs, 1500, 1e-9);
 
-            // 5. Shift minimum per component to min(d0) and calibrate physical distance scale to match exact Eikonal max distance
-            //    WITHOUT blending piecewise-linear dEik noise into phi!
+            // 5. Calibrate range per connected component to exact physical [minEik, maxEik] arc-length distance
             for (int c = 0; c < mesh.ConnectedComponentCount; c++)
             {
                 double minPhi = double.MaxValue, maxPhi = double.MinValue;
@@ -230,7 +271,7 @@ namespace CraneGH.Core
 
         /// <summary>
         /// Computes exact multi-source shortest geodesic distance on a triangle mesh using
-        /// Dijkstra initialization followed by Planar-Triangle Fast Marching Eikonal Wavefront Relaxation
+        /// Dijkstra initialization followed by Wavefront-Ordered Planar-Triangle Fast Marching Eikonal Relaxation
         /// (Kimmel & Sethian, "Computing Geodesic Paths on Manifolds", PNAS 1998).
         /// </summary>
         public static double[] ComputeExactSurfaceGeodesicBaseline(
@@ -282,12 +323,26 @@ namespace CraneGH.Core
                 }
             }
 
-            // 2. Planar-Triangle Eikonal Wavefront Sweeps (eliminates mesh-edge zigzag bias across triangle interiors!)
-            for (int sweep = 0; sweep < 4; sweep++)
+            // 2. Order triangles in increasing Dijkstra wavefront distance from the source so Eikonal updates
+            //    propagate all the way from bottom to top in a single sweep regardless of mesh face indexing!
+            int nF = mesh.FaceCount;
+            int[] faceOrder = new int[nF];
+            double[] faceMinDist = new double[nF];
+            for (int f = 0; f < nF; f++)
+            {
+                faceOrder[f] = f;
+                int[] fv = mesh.Faces[f];
+                faceMinDist[f] = Math.Min(dist[fv[0]], Math.Min(dist[fv[1]], dist[fv[2]]));
+            }
+            Array.Sort(faceMinDist, faceOrder);
+
+            // 3. Wavefront-ordered Planar-Triangle Eikonal Sweeps (eliminates mesh-edge zigzag bias across triangle interiors!)
+            for (int sweep = 0; sweep < 6; sweep++)
             {
                 bool changed = false;
-                for (int f = 0; f < mesh.FaceCount; f++)
+                for (int idx = 0; idx < nF; idx++)
                 {
+                    int f = (sweep % 2 == 0) ? faceOrder[idx] : faceOrder[nF - 1 - idx];
                     int[] fv = mesh.Faces[f];
                     for (int k = 0; k < 3; k++)
                     {
@@ -505,7 +560,7 @@ namespace CraneGH.Core
         }
 
         // =========================================================================================
-        // 3. GLOBALLY OPTIMAL DIRECTION FIELDS (Knöppel, Crane, Pinkall, Schröder 2013)
+        // 3. GLOBALLY OPTIMAL DIRECTION FIELDS (Knöppel et al. 2013 + Bommes et al. SIGGRAPH 2009 Combing)
         // =========================================================================================
         public static Vector3d[] ComputeOptimalDirectionField(
             DdgMesh mesh,
@@ -526,99 +581,134 @@ namespace CraneGH.Core
             orthoField = new Vector3d[n];
             double[] rootAngles = new double[n];
 
-            // If user supplied an input vector field and wants direct U/V cross decomposition (or curvatureAlignment >= 0.99)
-            if (customRef != null && curvatureAlignment >= 0.99)
+            // Scale-invariant diffusion time t = s * h_eff^2 so cross fields are equally smooth on 1mm and 1000mm meshes!
+            double diag = mesh.RhinoMesh.GetBoundingBox(false).Diagonal.Length;
+            double hEff = Math.Max(2.2 * mesh.MeanEdgeLength, 0.055 * diag);
+            double alignClamped = Math.Max(0.02, Math.Min(10.0, curvatureAlignment <= 1e-4 ? 0.35 : curvatureAlignment));
+            double t = (1.25 / alignClamped) * hEff * hEff;
+
+            var builder = new SparseMatrixBuilder(2 * n, 2 * n);
+            foreach (var e in mesh.Edges)
             {
-                for (int i = 0; i < n; i++)
+                int i = e.V0;
+                int j = e.V1;
+                double w = Math.Max(1e-6, e.CotanWeight) * t;
+
+                double thetaI = FindHalfEdgeAngle(mesh, i, j);
+                double thetaJ = FindHalfEdgeAngle(mesh, j, i);
+                double phi = kSym * (thetaI - (thetaJ + Math.PI));
+                double cosP = Math.Cos(phi);
+                double sinP = Math.Sin(phi);
+
+                builder.Add(2 * i, 2 * i, w);
+                builder.Add(2 * i + 1, 2 * i + 1, w);
+                builder.Add(2 * j, 2 * j, w);
+                builder.Add(2 * j + 1, 2 * j + 1, w);
+
+                builder.Add(2 * i, 2 * j, -w * cosP);
+                builder.Add(2 * i, 2 * j + 1, w * sinP);
+                builder.Add(2 * i + 1, 2 * j, -w * sinP);
+                builder.Add(2 * i + 1, 2 * j + 1, -w * cosP);
+
+                builder.Add(2 * j, 2 * i, -w * cosP);
+                builder.Add(2 * j, 2 * i + 1, -w * sinP);
+                builder.Add(2 * j + 1, 2 * i, w * sinP);
+                builder.Add(2 * j + 1, 2 * i + 1, -w * cosP);
+            }
+
+            // Extract boundary / sharp-crease feature tangents (Bommes, Zimmer, Kobbelt SIGGRAPH 2009 Section 3)
+            Vector3d[] featureDir = new Vector3d[n];
+            double[] featureWeight = new double[n];
+            double sharpThresh = 22.0 * Math.PI / 180.0;
+            foreach (var e in mesh.Edges)
+            {
+                if (e.IsBoundary || e.DihedralAngle >= sharpThresh)
                 {
-                    Vector3d v = customRef[i];
-                    double px = v * mesh.TangentBasisX[i];
-                    double py = v * mesh.TangentBasisY[i];
-                    double ang = (Math.Abs(px) + Math.Abs(py) > 1e-12) ? Math.Atan2(py, px) : 0.0;
-                    rootAngles[i] = ang;
-                    field[i] = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
-                    orthoField[i] = -Math.Sin(ang) * mesh.TangentBasisX[i] + Math.Cos(ang) * mesh.TangentBasisY[i];
+                    Vector3d ed = mesh.Positions[e.V1] - mesh.Positions[e.V0];
+                    if (ed.Unitize())
+                    {
+                        double fw = e.IsBoundary ? 3.5 : 2.5;
+                        for (int end = 0; end < 2; end++)
+                        {
+                            int v = end == 0 ? e.V0 : e.V1;
+                            Vector3d proj = ed - (ed * mesh.VertexNormals[v]) * mesh.VertexNormals[v];
+                            if (proj.Unitize())
+                            {
+                                if (featureDir[v].Length > 1e-12 && (featureDir[v] * proj) < 0)
+                                    proj = -proj;
+                                featureDir[v] += proj;
+                                if (fw > featureWeight[v]) featureWeight[v] = fw;
+                            }
+                        }
+                    }
                 }
             }
-            else
+
+            double maxCurv = 1e-9;
+            for (int i = 0; i < n; i++)
             {
-                var builder = new SparseMatrixBuilder(2 * n, 2 * n);
-                foreach (var e in mesh.Edges)
+                double cm = Math.Abs(mesh.MeanCurvature[i]);
+                if (cm > maxCurv) maxCurv = cm;
+            }
+
+            double[] rhs = new double[2 * n];
+            intbestSeed(mesh, customRef, featureWeight, out int primarySeed);
+
+            for (int i = 0; i < n; i++)
+            {
+                double mass = mesh.DualAreas[i];
+                Vector3d pDir;
+                double wAlign;
+
+                if (customRef != null)
                 {
-                    int i = e.V0;
-                    int j = e.V1;
-                    double w = e.CotanWeight;
-
-                    double thetaI = FindHalfEdgeAngle(mesh, i, j);
-                    double thetaJ = FindHalfEdgeAngle(mesh, j, i);
-                    double phi = kSym * (thetaI - thetaJ + Math.PI);
-                    double cosP = Math.Cos(phi);
-                    double sinP = Math.Sin(phi);
-
-                    builder.Add(2 * i, 2 * i, w);
-                    builder.Add(2 * i + 1, 2 * i + 1, w);
-                    builder.Add(2 * j, 2 * j, w);
-                    builder.Add(2 * j + 1, 2 * j + 1, w);
-
-                    builder.Add(2 * i, 2 * j, -w * cosP);
-                    builder.Add(2 * i, 2 * j + 1, w * sinP);
-                    builder.Add(2 * i + 1, 2 * j, -w * sinP);
-                    builder.Add(2 * i + 1, 2 * j + 1, -w * cosP);
-
-                    builder.Add(2 * j, 2 * i, -w * cosP);
-                    builder.Add(2 * j, 2 * i + 1, -w * sinP);
-                    builder.Add(2 * j + 1, 2 * i, w * sinP);
-                    builder.Add(2 * j + 1, 2 * i + 1, -w * cosP);
+                    pDir = customRef[i];
+                    pDir -= (pDir * mesh.VertexNormals[i]) * mesh.VertexNormals[i];
+                    wAlign = pDir.Unitize() ? 2.5 : 0.05;
                 }
-
-                builder.ShiftDiagonal(1e-4);
-
-                double[] solution;
-                if (customRef != null || curvatureAlignment > 1e-4)
+                else if (featureWeight[i] > 0.0 && featureDir[i].Unitize())
                 {
-                    double alpha = customRef != null ? Math.Max(0.25, curvatureAlignment * 5.0) : curvatureAlignment;
-                    double[] rhs = new double[2 * n];
-                    for (int i = 0; i < n; i++)
-                    {
-                        double mass = mesh.DualAreas[i];
-                        builder.Add(2 * i, 2 * i, alpha * mass);
-                        builder.Add(2 * i + 1, 2 * i + 1, alpha * mass);
-
-                        Vector3d pDir = customRef != null ? customRef[i] : mesh.PrincipalDir[i];
-                        double px = pDir * mesh.TangentBasisX[i];
-                        double py = pDir * mesh.TangentBasisY[i];
-                        double ang = Math.Atan2(py, px) * kSym;
-                        double mag = customRef != null ? Math.Max(0.1, pDir.Length) : (Math.Abs(mesh.MeanCurvature[i]) + 1e-3);
-                        rhs[2 * i] = alpha * mass * mag * Math.Cos(ang);
-                        rhs[2 * i + 1] = alpha * mass * mag * Math.Sin(ang);
-                    }
-                    CsrMatrix A = builder.Build();
-                    solution = SparseLinearSolver.SolvePCG(A, rhs, 1000, 1e-7);
+                    pDir = featureDir[i];
+                    wAlign = featureWeight[i];
                 }
                 else
                 {
-                    double[] massDiag = new double[2 * n];
-                    for (int i = 0; i < n; i++)
-                    {
-                        massDiag[2 * i] = mesh.DualAreas[i];
-                        massDiag[2 * i + 1] = mesh.DualAreas[i];
-                    }
-                    CsrMatrix A = builder.Build();
-                    solution = SparseLinearSolver.SmallestEigenvector(A, massDiag, 12, 500);
+                    pDir = mesh.PrincipalDir[i];
+                    double normC = Math.Min(1.0, Math.Abs(mesh.MeanCurvature[i]) / maxCurv);
+                    wAlign = 0.15 + 1.35 * Math.Pow(normC, 0.5);
                 }
 
-                for (int i = 0; i < n; i++)
-                {
-                    double re = solution[2 * i];
-                    double im = solution[2 * i + 1];
-                    double ang = Math.Atan2(im, re) / kSym;
-                    rootAngles[i] = ang;
-                    field[i] = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
-                    orthoField[i] = -Math.Sin(ang) * mesh.TangentBasisX[i] + Math.Cos(ang) * mesh.TangentBasisY[i];
-                }
+                double diagMass = Math.Max(1e-6, wAlign) * mass;
+                builder.Add(2 * i, 2 * i, diagMass);
+                builder.Add(2 * i + 1, 2 * i + 1, diagMass);
+
+                double px = pDir * mesh.TangentBasisX[i];
+                double py = pDir * mesh.TangentBasisY[i];
+                double ang = Math.Atan2(py, px) * kSym;
+                rhs[2 * i] = diagMass * Math.Cos(ang);
+                rhs[2 * i + 1] = diagMass * Math.Sin(ang);
             }
 
+            CsrMatrix A = builder.Build();
+            double[] solution = SparseLinearSolver.SolvePCG(A, rhs, 1200, 1e-8);
+
+            for (int i = 0; i < n; i++)
+            {
+                double re = solution[2 * i];
+                double im = solution[2 * i + 1];
+                double ang = Math.Atan2(im, re) / kSym;
+                rootAngles[i] = ang;
+                Vector3d u0 = Math.Cos(ang) * mesh.TangentBasisX[i] + Math.Sin(ang) * mesh.TangentBasisY[i];
+                if (!u0.Unitize()) u0 = mesh.TangentBasisX[i];
+                Vector3d v0 = Vector3d.CrossProduct(mesh.VertexNormals[i], u0);
+                if (!v0.Unitize()) v0 = mesh.TangentBasisY[i];
+                field[i] = u0;
+                orthoField[i] = v0;
+            }
+
+            // Detect Cross-Field / N-RoSy Singularities before combing
             singularities = new List<Point3d>();
+            bool[] nearSingularity = new bool[n];
             for (int f = 0; f < mesh.FaceCount; f++)
             {
                 int baseHe = f * 3;
@@ -636,10 +726,112 @@ namespace CraneGH.Core
                     totalDelta += diff;
                 }
                 if (Math.Abs(totalDelta) > 1.5)
+                {
                     singularities.Add(mesh.FaceCenters[f]);
+                    nearSingularity[mesh.Faces[f][0]] = true;
+                    nearSingularity[mesh.Faces[f][1]] = true;
+                    nearSingularity[mesh.Faces[f][2]] = true;
+                }
+            }
+
+            // Comb the 4-RoSy / 2-RoSy field across a Parallel-Transport Spanning Tree so U (field) and V (orthoField)
+            // never randomly swap 90 degrees or flip 180 degrees from vertex to vertex due to arbitrary TangentBasisX!
+            if (kSym >= 2 && n > 0)
+            {
+                bool[] combed = new bool[n];
+                var pq = new SortedSet<(double cost, int u, int v)>();
+
+                for (int startIdx = 0; startIdx < n; startIdx++)
+                {
+                    int seed = (startIdx == 0) ? primarySeed : (startIdx - 1);
+                    if (combed[seed]) continue;
+
+                    // If user provided a reference vector at seed, align seed's primary U arm with customRef[seed]
+                    if (customRef != null && customRef[seed].Length > 1e-12)
+                    {
+                        Vector3d bestArm = PickClosestCrossArm(field[seed], orthoField[seed], customRef[seed], kSym);
+                        field[seed] = bestArm;
+                        Vector3d o = Vector3d.CrossProduct(mesh.VertexNormals[seed], bestArm);
+                        if (o.Unitize()) orthoField[seed] = o;
+                    }
+
+                    combed[seed] = true;
+                    foreach (int heIdx in mesh.VertexOutgoingHalfEdges[seed])
+                    {
+                        var he = mesh.HalfEdges[heIdx];
+                        int nb = he.TargetVertex;
+                        double edgeCost = (nearSingularity[seed] || nearSingularity[nb]) ? 10.0 : mesh.Edges[he.EdgeIndex].DihedralAngle;
+                        pq.Add((edgeCost + 1e-7 * heIdx, seed, nb));
+                    }
+
+                    while (pq.Count > 0)
+                    {
+                        var top = pq.Min;
+                        pq.Remove(top);
+                        int u = top.u;
+                        int v = top.v;
+                        if (combed[v]) continue;
+
+                        Vector3d refVec = (customRef != null && curvatureAlignment >= 0.95 && customRef[v].Length > 1e-12)
+                            ? customRef[v]
+                            : field[u];
+                        Vector3d transported = refVec - (refVec * mesh.VertexNormals[v]) * mesh.VertexNormals[v];
+                        if (!transported.Unitize()) transported = field[v];
+
+                        Vector3d bestU = PickClosestCrossArm(field[v], orthoField[v], transported, kSym);
+                        field[v] = bestU;
+                        Vector3d bestV = Vector3d.CrossProduct(mesh.VertexNormals[v], bestU);
+                        if (!bestV.Unitize()) bestV = orthoField[v];
+                        orthoField[v] = bestV;
+
+                        combed[v] = true;
+                        foreach (int heIdx in mesh.VertexOutgoingHalfEdges[v])
+                        {
+                            var he = mesh.HalfEdges[heIdx];
+                            int nb = he.TargetVertex;
+                            if (!combed[nb])
+                            {
+                                double edgeCost = (nearSingularity[v] || nearSingularity[nb]) ? 10.0 : mesh.Edges[he.EdgeIndex].DihedralAngle;
+                                pq.Add((top.cost * 0.1 + edgeCost + 1e-7 * heIdx, v, nb));
+                            }
+                        }
+                    }
+                }
             }
 
             return field;
+        }
+
+        private static void intbestSeed(DdgMesh mesh, Vector3d[] customRef, double[] featureWeight, out int primarySeed)
+        {
+            primarySeed = 0;
+            double bestScore = -1.0;
+            for (int i = 0; i < mesh.VertexCount; i++)
+            {
+                double s = customRef != null
+                    ? customRef[i].Length
+                    : (featureWeight[i] + Math.Abs(mesh.MeanCurvature[i]));
+                if (s > bestScore)
+                {
+                    bestScore = s;
+                    primarySeed = i;
+                }
+            }
+        }
+
+        private static Vector3d PickClosestCrossArm(Vector3d u, Vector3d v, Vector3d targetDir, int kSym)
+        {
+            if (kSym == 1) return u;
+            if (kSym == 2)
+                return (u * targetDir >= 0.0) ? u : -u;
+
+            // kSym >= 4: choose among {+u, -u, +v, -v}
+            double dU = u * targetDir;
+            double dV = v * targetDir;
+            if (Math.Abs(dU) >= Math.Abs(dV))
+                return dU >= 0.0 ? u : -u;
+            else
+                return dV >= 0.0 ? v : -v;
         }
 
         // =========================================================================================
@@ -937,10 +1129,11 @@ namespace CraneGH.Core
                 }
                 groundState = SparseLinearSolver.SolvePCG(builder.Build(), rhs, 1200, 1e-7);
             }
-            else if (optionalDensityScalar != null && optionalDensityScalar.Count > 0)
+            else
             {
-                // Prevent eigenvector localization in low-frequency regions when frequency lambda_i varies spatially!
-                // 1. Initialize unit-norm complex wave psi^(0) via BFS phase integration of edgeOmega from peak density vertex
+                // Spanning-Tree Phase Integration + Screened Connection Relaxation:
+                // Prevents eigenvector localization in narrow necks or low-frequency regions so stripes
+                // are 100% uniform, equidistant, and coherent across the entire mesh!
                 int seedV = 0;
                 double maxLam = -1.0;
                 for (int i = 0; i < nV; i++)
@@ -987,9 +1180,9 @@ namespace CraneGH.Core
                     }
                 }
 
-                // 2. Two passes of screened connection relaxation (A + gamma * I) psi = gamma * psiInit
-                //    so phase wraps smoothly into Y-bifurcations while preserving local density everywhere!
-                const double gamma = 0.45;
+                // 3 passes of screened connection relaxation (A + gamma * I) psi = gamma * psiInit
+                // so phase wraps smoothly into Y-bifurcations while preserving exact stripe spacing D everywhere!
+                const double gamma = 0.35;
                 for (int i = 0; i < nV; i++)
                 {
                     builder.Add(2 * i, 2 * i, gamma);
@@ -998,7 +1191,7 @@ namespace CraneGH.Core
                 CsrMatrix A_screen = builder.Build();
 
                 groundState = psiInit;
-                for (int pass = 0; pass < 2; pass++)
+                for (int pass = 0; pass < 3; pass++)
                 {
                     double[] rhs = new double[2 * nV];
                     for (int i = 0; i < nV; i++)
@@ -1014,16 +1207,6 @@ namespace CraneGH.Core
                         if (len > 1e-12) { groundState[2 * i] = re / len; groundState[2 * i + 1] = im / len; }
                     }
                 }
-            }
-            else
-            {
-                double[] massDiag = new double[2 * nV];
-                for (int i = 0; i < nV; i++)
-                {
-                    massDiag[2 * i] = mesh.DualAreas[i];
-                    massDiag[2 * i + 1] = mesh.DualAreas[i];
-                }
-                groundState = SparseLinearSolver.SmallestEigenvector(builder.Build(), massDiag, 14, 600);
             }
 
             double[] psiRe = new double[nV];
